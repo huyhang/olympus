@@ -1,8 +1,8 @@
 # Cleo
 
-A librarian agent for [Nineveh](../../nineveh). Cleo answers questions about
-what is in the library and files new volumes into it, driven by a small
-language model running locally.
+A librarian agent for Nineveh (API contract in the `contracts` directory.
+Cleo answers questions about what is in the library and files new volumes
+into it, driven by a small language model running locally.
 
 Named for Clio, the Muse of history — conventionally depicted holding the
 scrolls, which is roughly the job.
@@ -197,9 +197,3 @@ Not built yet; recorded so the decisions do not have to be made twice.
 - **Transport:** Tailscale, with the service bound to loopback and exposed via
   `tailscale serve`. Nothing listens on a routable address.
 
-## Further reading
-
-- [`nineveh/docs/contract-vendoring.md`](../../nineveh/docs/contract-vendoring.md)
-  — the vendoring procedure and what a client has to get right.
-- [`nineveh/README.md`](../../nineveh/README.md) — the Librarian agent section.
-- `~/git-repos/librarian-api-design.md` — why the API has the shape it does.
