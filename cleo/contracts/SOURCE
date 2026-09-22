@@ -1,0 +1,11 @@
+# Provenance for librarian-openapi.json. Refresh with scripts/refresh-contract.sh.
+source:      nineveh
+commit:      db3d45913e50c961e793149468683aa4d9bc60ea
+version:     0.1.0
+operations:  8
+sha256:      71a2b45fb88de88f4b1e6718f72a48805160179062e861c49f3ef45072b2e102
+taken:       2026-09-22T17:42:54Z
+
+# Pin on sha256, not on version. Nineveh's info.version tracks its package and
+# bumps on releases that leave these operations untouched; the hash changes
+# exactly when the surface Cleo calls changes.

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cleo"
+version = "0.1.0"
+description = "A librarian agent for a Nineveh comic and manga library"
+readme = "README.md"
+# Matches Nineveh, whose CI runs 3.12. Keeping the floor the same means a
+# construct that works here cannot fail over there for version reasons.
+requires-python = ">=3.12"
+dependencies = [
+  # The only runtime dependency so far: Cleo is a client of Nineveh's HTTP API
+  # and holds no library state of its own.
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cleo"]
+
+[tool.pytest.ini_options]
+# No `--cov-fail-under` yet: there is no implementation to cover, and a gate
+# that passes vacuously teaches nothing. Turn it on with the first real module,
+# at the 90% Nineveh holds itself to.
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["cleo"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "\\.\\.\\."]
+
+# Deliberately no [tool.ruff]. Nineveh has none either, and ruff's own defaults
+# already enable the rule set both repositories are checked against
+# (`ruff check` / `ruff format --check`). Adding configuration here would let
+# the two drift apart.

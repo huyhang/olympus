@@ -1,0 +1,35 @@
+# Shared by every agent in this repository.
+
+# Virtual environments are per-machine and not relocatable: their scripts and
+# editable-install paths are absolute, so a copied venv silently imports
+# another checkout's source. Always recreate rather than commit or copy.
+.venv/
+venv/
+
+# Python build and cache artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local environment and secrets. Agent credentials are issued by the service
+# they talk to and are shown once; they belong in a password manager or an
+# untracked .env, never here.
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
