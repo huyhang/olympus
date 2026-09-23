@@ -11,32 +11,37 @@ readme = "README.md"
 # construct that works here cannot fail over there for version reasons.
 requires-python = ">=3.12"
 dependencies = [
-  # The only runtime dependency so far: Cleo is a client of Nineveh's HTTP API
-  # and holds no library state of its own.
   "httpx>=0.28,<1",
+  "textual>=1,<7",
 ]
+
+[project.scripts]
+cleo = "cleo.app:main"
 
 [project.optional-dependencies]
 test = [
   "httpx>=0.28,<1",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<8",
+  "ruff>=0.9,<1",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cleo"]
 
 [tool.pytest.ini_options]
-# No `--cov-fail-under` yet: there is no implementation to cover, and a gate
-# that passes vacuously teaches nothing. Turn it on with the first real module,
-# at the 90% Nineveh holds itself to.
-addopts = "-q"
+# The 90% Nineveh holds itself to, now that there is implementation to cover.
+# The suite currently sits well above it; the gate is the floor, not the target.
+addopts = "-q --cov=cleo --cov-fail-under=90"
 testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["cleo"]
 branch = true
+# `python -m cleo` only ever runs in a fresh interpreter, so process-local
+# coverage cannot see it. It is four lines that call `main`, which is tested.
+omit = ["src/cleo/__main__.py"]
 
 [tool.coverage.report]
 exclude_also = ["if TYPE_CHECKING:", "\\.\\.\\."]

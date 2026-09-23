@@ -18,6 +18,18 @@ ENV_FILE = PROJECT_ROOT / ".env"
 URL_KEY = "NINEVEH_URL"
 TOKEN_KEY = "NINEVEH_TOKEN"
 DEFAULT_URL = "http://localhost:8080"
+OLLAMA_URL_KEY = "OLLAMA_URL"
+MODEL_KEY = "CLEO_MODEL"
+STATE_DIR_KEY = "CLEO_STATE_DIR"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_MODEL = "granite4.2:8b"
+
+
+def default_state_dir() -> Path:
+    """Return Cleo's private state directory without creating it."""
+    configured = os.environ.get("XDG_DATA_HOME")
+    root = Path(configured).expanduser() if configured else Path.home() / ".local/share"
+    return root / "cleo"
 
 
 class ConfigurationError(RuntimeError):
@@ -28,6 +40,9 @@ class ConfigurationError(RuntimeError):
 class Settings:
     nineveh_url: str
     token: str
+    ollama_url: str = DEFAULT_OLLAMA_URL
+    model: str = DEFAULT_MODEL
+    state_dir: Path | None = None
 
     def __repr__(self) -> str:
         """Never render the secret.
@@ -35,7 +50,15 @@ class Settings:
         The default dataclass repr would put the token into any traceback,
         log line, or debugger frame that happens to touch this object.
         """
-        return f"Settings(nineveh_url={self.nineveh_url!r}, token=<redacted>)"
+        return (
+            f"Settings(nineveh_url={self.nineveh_url!r}, token=<redacted>, "
+            f"ollama_url={self.ollama_url!r}, model={self.model!r}, "
+            f"state_dir={str(self.data_dir)!r})"
+        )
+
+    @property
+    def data_dir(self) -> Path:
+        return self.state_dir if self.state_dir is not None else default_state_dir()
 
     @property
     def authorization(self) -> dict[str, str]:
@@ -52,6 +75,13 @@ class Settings:
         values = read_env_file(path)
         url = os.environ.get(URL_KEY) or values.get(URL_KEY) or DEFAULT_URL
         token = os.environ.get(TOKEN_KEY) or values.get(TOKEN_KEY) or ""
+        ollama_url = (
+            os.environ.get(OLLAMA_URL_KEY)
+            or values.get(OLLAMA_URL_KEY)
+            or DEFAULT_OLLAMA_URL
+        )
+        model = os.environ.get(MODEL_KEY) or values.get(MODEL_KEY) or DEFAULT_MODEL
+        state_dir_value = os.environ.get(STATE_DIR_KEY) or values.get(STATE_DIR_KEY)
         # Only a file that actually holds the secret needs locking down. The
         # committed `.env.example` is world-readable on purpose.
         if values.get(TOKEN_KEY):
@@ -61,7 +91,13 @@ class Settings:
                 f"No {TOKEN_KEY}. Copy .env.example to .env and paste the token "
                 "from Nineveh's Admin -> Librarian page, or export it."
             )
-        return cls(nineveh_url=url.rstrip("/"), token=token)
+        return cls(
+            nineveh_url=url.rstrip("/"),
+            token=token,
+            ollama_url=ollama_url.rstrip("/"),
+            model=model,
+            state_dir=Path(state_dir_value).expanduser() if state_dir_value else None,
+        )
 
 
 def read_env_file(path: Path) -> dict[str, str]:

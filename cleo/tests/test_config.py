@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from cleo.config import DEFAULT_URL, ConfigurationError, Settings, read_env_file
+from cleo.config import (
+    DEFAULT_MODEL,
+    DEFAULT_OLLAMA_URL,
+    DEFAULT_URL,
+    ConfigurationError,
+    Settings,
+    read_env_file,
+)
 
 
 def write_env(tmp_path: Path, body: str, mode: int = 0o600) -> Path:
@@ -53,6 +60,35 @@ def test_a_trailing_slash_is_dropped(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("NINEVEH_URL", raising=False)
     env = write_env(tmp_path, "NINEVEH_URL=http://nas:8080/\nNINEVEH_TOKEN=nvh_abc\n")
     assert Settings.load(env).nineveh_url == "http://nas:8080"
+
+
+def test_local_model_settings_have_safe_defaults(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("OLLAMA_URL", raising=False)
+    monkeypatch.delenv("CLEO_MODEL", raising=False)
+    env = write_env(tmp_path, "NINEVEH_TOKEN=nvh_abc\n")
+    settings = Settings.load(env)
+    assert settings.ollama_url == DEFAULT_OLLAMA_URL
+    assert settings.model == DEFAULT_MODEL
+
+
+def test_model_and_private_state_location_can_be_configured(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.delenv("OLLAMA_URL", raising=False)
+    monkeypatch.delenv("CLEO_MODEL", raising=False)
+    monkeypatch.delenv("CLEO_STATE_DIR", raising=False)
+    state = tmp_path / "state"
+    env = write_env(
+        tmp_path,
+        "NINEVEH_TOKEN=x\n"
+        "OLLAMA_URL=http://ollama/\n"
+        "CLEO_MODEL=another-model\n"
+        f"CLEO_STATE_DIR={state}\n",
+    )
+    settings = Settings.load(env)
+    assert settings.ollama_url == "http://ollama"
+    assert settings.model == "another-model"
+    assert settings.data_dir == state
 
 
 def test_the_token_never_appears_in_a_repr():
