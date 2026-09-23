@@ -77,11 +77,39 @@ def test_the_contract_carries_no_administration_endpoints(vendored: dict):
     assert not [path for path in vendored["paths"] if "/admin/" in path]
 
 
-def test_the_vendored_contract_still_matches_nineveh(vendored: dict):
+def test_every_operation_asks_for_a_token_the_copy_declares(vendored: dict):
+    """Cleo always sends its token; a client generated from this copy sends one
+    only where an operation requires it, by a scheme defined here."""
+    schemes = set(vendored.get("components", {}).get("securitySchemes", {}))
+    required = [
+        {name for requirement in operation.get("security", []) for name in requirement}
+        for item in vendored["paths"].values()
+        for method, operation in item.items()
+        if method in METHODS
+    ]
+    assert required
+    assert all(names and names <= schemes for names in required)
+
+
+@pytest.fixture(scope="module")
+def live() -> dict:
     try:
-        live = httpx.get(f"{NINEVEH}/openapi.json", timeout=3).json()
+        return httpx.get(f"{NINEVEH}/openapi.json", timeout=3).json()
     except httpx.HTTPError as unreachable:
         pytest.skip(f"Nineveh not reachable at {NINEVEH}: {unreachable}")
-    assert librarian_paths(live) == vendored["paths"], (
-        "contracts/librarian-openapi.json is stale — run scripts/refresh-contract.sh"
-    )
+
+
+STALE = "contracts/librarian-openapi.json is stale — run scripts/refresh-contract.sh"
+
+
+def test_the_vendored_paths_still_match_nineveh(vendored: dict, live: dict):
+    assert librarian_paths(live) == vendored["paths"], STALE
+
+
+def test_the_vendored_components_still_match_nineveh(vendored: dict, live: dict):
+    """A path names its bodies and its token only by reference, so a renamed
+    response field, or a changed auth scheme, leaves every path as it was."""
+    for section in ("schemas", "securitySchemes"):
+        carried = vendored.get("components", {}).get(section, {})
+        published = live.get("components", {}).get(section, {})
+        assert {name: published.get(name) for name in carried} == carried, STALE

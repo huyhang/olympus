@@ -92,13 +92,19 @@ So a volume can be proposed from anywhere and placed only where you are.
 ## The vendored contract
 
 `contracts/librarian-openapi.json` is the agent-facing slice of Nineveh's
-OpenAPI document: eight operations and the four schemas they reference, and
+OpenAPI document: eight operations and the schemas they reference, and
 nothing else. `contracts/SOURCE` records the commit it came from and its
 sha256.
 
+Every JSON response is described by a named schema, and the operations declare
+the `LibrarianToken` bearer scheme rather than an `authorization` header
+parameter, so a generated client asks for the `nvh_` token instead of a raw
+header. No schema sets `additionalProperties: false`, so a field Nineveh adds
+later is ignored rather than rejected.
+
 It is vendored rather than fetched so builds are reproducible offline and a
 contract change arrives as a reviewable diff. Deliberately **not** the whole
-`openapi.json` — that describes 56 operations, and every unrelated Nineveh
+`openapi.json` — that describes 60 operations, and every unrelated Nineveh
 change would churn this repo and bury the signal that matters.
 
 Refresh it, and the provenance beside it, with:
@@ -110,8 +116,9 @@ git diff contracts/                    # the diff is the point — read it
 ```
 
 `tests/test_contract.py` guards both halves: that the file matches its recorded
-hash and carries no dangling `$ref`, and — when a Nineveh is reachable — that
-it still matches the running server. The live check *skips* rather than fails
+hash, carries no dangling `$ref` and asks for a token on every operation, and —
+when a Nineveh is reachable — that its paths, and the schemas and auth scheme
+they reference, still match the running server. The live check *skips* rather than fails
 when Nineveh is down, so it can run on every local `pytest`.
 
 ```sh
