@@ -34,7 +34,8 @@ packages = ["src/cleo"]
 # The suite currently sits well above it; the gate is the floor, not the target.
 addopts = "-q --cov=cleo --cov-fail-under=90"
 testpaths = ["tests"]
-pythonpath = ["src"]
+# `scripts` for the fake backends, whose tests keep them honest to the adapters.
+pythonpath = ["src", "scripts"]
 
 [tool.coverage.run]
 source = ["cleo"]

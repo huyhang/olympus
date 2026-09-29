@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
-from typing import Any
+
+from fakes import AmbiguousCatalog, FakeCatalog, ScriptedModel
 
 from cleo.agent import (
     EMPTY_REPLY,
@@ -19,50 +19,9 @@ from cleo.ports import ModelError
 from cleo.tools import ReadOnlyToolRegistry
 
 
-class ScriptedModel:
-    def __init__(self, turns: list[list[ModelChunk]]) -> None:
-        self.turns = turns
-        self.requests: list[
-            tuple[Sequence[dict[str, Any]], Sequence[dict[str, Any]]]
-        ] = []
-
-    async def stream_chat(self, messages, tools) -> AsyncIterator[ModelChunk]:
-        self.requests.append((list(messages), list(tools)))
-        for chunk in self.turns.pop(0):
-            yield chunk
-
-    async def aclose(self):
-        pass
-
-
-class FakeCatalog:
-    async def list_libraries(self):
-        return {"libraries": ["Manga"]}
-
-    async def search_series(self, **filters):
-        return {"items": [{"id": "pluto", "title": "Pluto"}], "filters": filters}
-
-    async def get_series(self, series_id):
-        return {"id": series_id, "title": "Pluto", "volumes": 8}
-
-
 class FailingCatalog(FakeCatalog):
     async def search_series(self, **filters):
         raise CatalogError("Nineveh is unavailable.")
-
-
-class AmbiguousCatalog(FakeCatalog):
-    """Nineveh's real title-search shape, with no confident match."""
-
-    async def search_series(self, **filters):
-        return {
-            "candidates": [
-                {"seriesId": "s1", "localName": "Saga"},
-                {"seriesId": "s2", "localName": "Vinland Saga"},
-            ],
-            "confidentMatch": None,
-            "ambiguous": True,
-        }
 
 
 class ConfidentCatalog(FakeCatalog):
@@ -280,6 +239,27 @@ def test_terminal_escapes_in_model_output_never_leave_the_agent():
     assert "Pluto" in events[-1].text
 
 
+def test_an_escape_split_across_chunks_never_streams_in_pieces():
+    """Ollama streams a token at a time, so one sequence can span several."""
+    model = ScriptedModel(
+        [
+            [ModelChunk(tool_calls=(ToolCall("list_libraries", {}),))],
+            [
+                ModelChunk("You hold "),
+                ModelChunk("\x1b"),
+                ModelChunk("[31"),
+                ModelChunk("mPluto"),
+                ModelChunk("\x1b[0"),
+                ModelChunk("m."),
+            ],
+        ]
+    )
+    events = run_turn(Librarian(model, ReadOnlyToolRegistry(FakeCatalog())))
+    tokens = [event.text for event in events if event.kind == "token"]
+    assert tokens == ["You hold ", "Pluto", "."]
+    assert events[-1].text == "You hold Pluto."
+
+
 def test_candidates_are_read_from_the_shapes_nineveh_actually_returns():
     assert candidates_of({"candidates": [{"seriesId": "a", "localName": "A"}]}) == (
         Candidate("a", "A"),
@@ -294,9 +274,9 @@ def test_candidates_are_read_from_the_shapes_nineveh_actually_returns():
         Candidate("a", "A"),
     )
     assert candidates_of("not a payload") == ()
-    assert candidates_of({"candidates": [{"seriesId": "x", "localName": "\x1bY"}]}) == (
-        Candidate("x", "Y"),
-    )
+    assert candidates_of(
+        {"candidates": [{"seriesId": "x", "localName": "\x1b[31mY\x1b[0m"}]}
+    ) == (Candidate("x", "Y"),)
 
 
 def test_a_tool_call_carries_its_id_back_to_the_model_when_one_was_given():

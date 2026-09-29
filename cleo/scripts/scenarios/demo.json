@@ -1,0 +1,142 @@
+{
+  "libraries": [
+    {"id": "manga", "name": "Manga", "relativePath": "Manga"},
+    {"id": "comics", "name": "Comics", "relativePath": "Comics"},
+    {"id": "private", "name": "Private", "relativePath": "Private"}
+  ],
+  "series": [
+    {
+      "seriesId": "vinland-saga",
+      "localName": "Vinland Saga",
+      "libraryId": "manga",
+      "authors": ["Makoto Yukimura"],
+      "status": "releasing",
+      "volumes": 12,
+      "providerTotals": {"status": "releasing"}
+    },
+    {
+      "seriesId": "saga",
+      "localName": "Saga",
+      "libraryId": "comics",
+      "category": "comic",
+      "authors": ["Brian K. Vaughan", "Fiona Staples"],
+      "status": "releasing",
+      "volumes": 10,
+      "providerTotals": {"status": "releasing"}
+    },
+    {
+      "seriesId": "pluto",
+      "localName": "Pluto",
+      "libraryId": "manga",
+      "authors": ["Naoki Urasawa", "Osamu Tezuka"],
+      "status": "finished",
+      "volumes": 8,
+      "providerTotals": {"final_volume": 8, "status": "finished"}
+    },
+    {
+      "seriesId": "20th-century-boys",
+      "localName": "20th Century Boys",
+      "libraryId": "manga",
+      "authors": ["Naoki Urasawa"],
+      "status": "finished",
+      "volumes": 22,
+      "providerTotals": {"final_volume": 22, "status": "finished"}
+    },
+    {
+      "seriesId": "berserk",
+      "localName": "Berserk",
+      "libraryId": "private",
+      "volumes": 41,
+      "error": {
+        "status": 403,
+        "detail": "This token may only read the Manga and Comics libraries."
+      }
+    }
+  ],
+  "rules": [
+    {
+      "match": "slow",
+      "steps": [
+        {"tool": "search_series", "arguments": {"query": "Pluto"}},
+        {"tool": "get_series", "arguments": {"series_id": "pluto"}},
+        {
+          "reply": "Nineveh holds all eight volumes of Pluto, from Pluto 001 to Pluto 008, about 1.4 GB in total. The provider lists the series as finished at eight volumes, so nothing is missing. This reply streams slowly on purpose, so there is time to press Escape and cancel it.",
+          "delay": 0.35
+        }
+      ]
+    },
+    {"match": "broken", "steps": [{"error": "model runner has unexpectedly stopped"}]},
+    {"match": ["crash", "500"], "steps": [{"status": 500, "error": "scripted crash"}]},
+    {"match": "garbled", "steps": [{"raw": "<html>this is not NDJSON</html>"}]},
+    {
+      "match": "berserk",
+      "steps": [
+        {"tool": "get_series", "arguments": {"series_id": "berserk"}},
+        {"reply": "I could not read that series."}
+      ]
+    },
+    {
+      "match": ["delete", "rename", "move"],
+      "steps": [
+        {"tool": "delete_series", "arguments": {"series_id": "saga"}},
+        {"tool": "delete_series", "arguments": {"series_id": "saga"}}
+      ]
+    },
+    {
+      "match": "(id saga)",
+      "steps": [
+        {"tool": "get_series", "arguments": {"series_id": "saga"}},
+        {"reply": "Nineveh holds ten volumes of Saga, the latest being Saga 010. The provider lists it as still releasing."}
+      ]
+    },
+    {
+      "match": ["urasawa", "author"],
+      "steps": [
+        {"tool": "find_series_by_author", "arguments": {"author": "Urasawa"}},
+        {"reply": "Nineveh has two series by Naoki Urasawa: **Pluto** (8 volumes) and **20th Century Boys** (22 volumes). Both are finished."}
+      ]
+    },
+    {
+      "match": "vinland",
+      "steps": [
+        {"tool": "search_series", "arguments": {"query": "Vinland Saga"}},
+        {"tool": "get_series", "arguments": {"series_id": "vinland-saga"}},
+        {"reply": "The latest Vinland Saga volume you have is volume 12. Nineveh holds 12 volumes, about 2.2 GB in total, and the provider lists the series as still releasing."}
+      ]
+    },
+    {
+      "match": "saga",
+      "steps": [{"tool": "search_series", "arguments": {"query": "Saga"}}]
+    },
+    {
+      "match": "pluto",
+      "steps": [
+        {"tool": "search_series", "arguments": {"query": "Pluto"}},
+        {"tool": "get_series", "arguments": {"series_id": "pluto"}},
+        {"reply": "Nineveh holds all eight volumes of Pluto, about 1.4 GB. The provider lists it as finished at eight volumes."}
+      ]
+    },
+    {
+      "match": ["markdown", "format"],
+      "steps": [
+        {"tool": "list_libraries"},
+        {"reply": "Every formatting feature at once:\n\n- **Bold** and *italic*\n- `inline code`\n\n| Library | Series |\n|---|---|\n| Manga | 3 |\n| Comics | 1 |\n\n> A quoted line."}
+      ]
+    },
+    {
+      "match": "ansi",
+      "steps": [
+        {"tool": "list_libraries"},
+        {"reply": "\u001b[2J\u001b[31mThis reply was sent wrapped in terminal escape codes.\u001b[0m The screen should not have cleared or turned red."}
+      ]
+    },
+    {
+      "match": ["libraries", "library"],
+      "steps": [
+        {"tool": "list_libraries"},
+        {"reply": "Nineveh has three libraries: Manga, Comics and Private."}
+      ]
+    }
+  ],
+  "fallback": [{"reply": "(fake Ollama: no rule matched that message.)"}]
+}

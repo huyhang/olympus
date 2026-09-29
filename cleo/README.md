@@ -225,9 +225,11 @@ something that would otherwise act on it:
 - **Series IDs are percent-encoded before they reach a URL.** The ID comes from
   the model, so an invented one must stay a single path segment rather than
   escaping `/api/v1/librarian/series/` into some other endpoint.
-- **Control characters are stripped from catalog and model text** before it is
-  rendered, stored, or exported. Titles and filenames come off downloaded
-  volumes; an escape sequence in one is displayed, never executed.
+- **Terminal escape sequences are stripped whole from catalog and model text**
+  before it is rendered, stored, or exported. Titles and filenames come off
+  downloaded volumes; an escape sequence in one is removed, never executed,
+  and leaves no `[31m` behind. A sequence split across streamed model tokens
+  is held back until complete rather than shown in pieces.
 
 Catalog facts must come from a Nineveh read *in the current conversation*. A
 follow-up may reuse what an earlier answer already established — asking "who
@@ -240,7 +242,7 @@ claim in a conversation always requires a tool result.
 python3 -m venv .venv
 .venv/bin/pip install -e '.[test]'
 .venv/bin/python -m pytest
-.venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
+.venv/bin/ruff check src tests scripts && .venv/bin/ruff format --check src tests scripts
 ```
 
 No ruff configuration on purpose — Nineveh has none either, and ruff's defaults
@@ -250,10 +252,35 @@ here would let the two drift.
 `pytest` holds itself to the 90% coverage Nineveh uses; the suite currently
 sits well above that floor.
 
+### Trying the interface without Ollama or Nineveh
+
+```sh
+.venv/bin/python scripts/fake_backends.py --launch
+```
+
+This runs the real TUI against scripted stand-ins for both services on one
+local port, with throwaway history. The identity bar reads `fake:demo`, so a
+fake session is never mistaken for a real one. Both fakes are needed: an
+answer no Nineveh read backs is replaced before it reaches the screen, so a
+fake model alone would only ever produce the refusal.
+
+`scripts/scenarios/demo.json` scripts a reply for each state the interface can
+be in. Mention its keywords in a question: `vinland` for a streamed answer with
+evidence, `saga` for the numbered pick list, `urasawa` for an author search,
+`slow` for a reply you can cancel with Esc, `berserk` for a Nineveh `403`,
+`delete` for a refused tool call, `broken`, `crash` and `garbled` for Ollama
+failures, `markdown` for rich formatting, and `ansi` for escape-code stripping.
+Anything else gets the no-lookup refusal.
+
+Run it without `--launch` to see each request logged as it arrives, and point
+Cleo at it from another terminal using the command it prints. A different
+scenario file can be passed as an argument; the file format is described at
+the top of the script.
+
 ```
 contracts/    the vendored API slice and its provenance
 doc/          the getting-started guide
-scripts/      re-vendoring
+scripts/      re-vendoring, and fake backends for trying the TUI
 src/cleo/     domain, read-only adapters, agent loop, persistence, and TUI
 tests/        unit, adapter, UI, wiring, and contract tests
 ```

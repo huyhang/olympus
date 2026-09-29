@@ -1,10 +1,10 @@
 # Provenance for librarian-openapi.json. Refresh with scripts/refresh-contract.sh.
 source:      nineveh
-commit:      9c66ad309a24dfc3bcc72fcc0fd57c6aaa571ccf  (uncommitted changes present)
+commit:      03e1e34d74103b01185f20eace514a8c954e8d44  (uncommitted changes present)
 version:     0.1.0
 operations:  8
 sha256:      064652a39b4ab60307e3bb03603533bd4e5d8e562b68db3c2c1299b742d336a2
-taken:       2026-09-23T19:17:25Z
+taken:       2026-09-25T20:59:26Z
 
 # Pin on sha256, not on version. Nineveh's info.version tracks its package and
 # bumps on releases that leave these operations untouched; the hash changes

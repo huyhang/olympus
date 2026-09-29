@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from textual.widgets import Input, ListView, Select, TextArea
+import httpx
+from fakes import AmbiguousCatalog, FakeCatalog, ScriptedModel
+from textual.widgets import Input, ListView, Select, Static, TextArea
 
+from cleo.agent import UNSUPPORTED_REPLY, Librarian
 from cleo.app import CleoApp, ConfirmScreen, HistoryScreen, SettingsScreen
 from cleo.commands import Command
-from cleo.domain import AgentEvent, Candidate, Evidence, Message
+from cleo.domain import AgentEvent, Candidate, Evidence, Message, ModelChunk, ToolCall
+from cleo.ollama import OllamaChatModel
 from cleo.store import ConversationStore
+from cleo.tools import ReadOnlyToolRegistry
 
 
 class FakeAgent:
@@ -581,9 +586,10 @@ def test_terminal_escapes_in_catalog_text_are_never_rendered(tmp_path):
                 for segment in strip
             )
             assert "\x1b" not in frame
+            assert "[31m" not in frame  # the sequence went whole, not just its ESC
             assert "HIJACKED" in frame
             stored = store.messages(app._conversation.id)[-1].content
-            assert "\x1b" not in stored
+            assert stored == "You hold HIJACKED."
             assert "\x1b" not in store.export_markdown(app._conversation.id).read_text()
 
     asyncio.run(exercise())
@@ -833,5 +839,161 @@ def test_the_send_button_asks_the_question(tmp_path):
             assert app._reply_task is not None
             await app._reply_task
             assert agent.questions == ["a real question"]
+
+    asyncio.run(exercise())
+
+
+# --- the real agent behind the screen ------------------------------------------
+#
+# Everything above drives the screen with a stand-in agent. These put Cleo's own
+# agent loop behind it, fed by a scripted model instead of Ollama, so what the
+# user sees is checked all the way from model output to widget.
+
+
+def real_agent(turns: list[list[ModelChunk]], catalog=None):
+    model = ScriptedModel(turns)
+    return model, Librarian(model, ReadOnlyToolRegistry(catalog or FakeCatalog()))
+
+
+async def ask(app: CleoApp, pilot, text: str) -> None:
+    app.query_one("#composer", TextArea).text = text
+    await app._submit()
+    await app._reply_task
+    await pilot.pause()
+
+
+def on_screen(app: CleoApp) -> list[str]:
+    """The transcript as displayed, oldest message first."""
+    return [widget.source for widget in app.query("#transcript > Markdown")]
+
+
+def evidence_on_screen(app: CleoApp) -> list[str]:
+    """The tool named in each evidence panel's title, in order."""
+    return [
+        panel.title.split(" · ")[1] for panel in app.query("#transcript > Collapsible")
+    ]
+
+
+def status_line(app: CleoApp) -> str:
+    return str(app.query_one("#status", Static).render())
+
+
+class PausingModel(ScriptedModel):
+    """Holds the stream after the first words of an answer, so a half-written
+    reply can be read off the screen."""
+
+    def __init__(self, turns: list[list[ModelChunk]]) -> None:
+        super().__init__(turns)
+        self.paused = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def stream_chat(self, messages, tools):
+        async for chunk in super().stream_chat(messages, tools):
+            yield chunk
+            if chunk.content and not self.paused.is_set():
+                self.paused.set()
+                await self.resume.wait()
+
+
+def test_a_grounded_answer_streams_in_and_its_evidence_follows(tmp_path):
+    async def exercise():
+        model = PausingModel(
+            [
+                [
+                    ModelChunk(
+                        tool_calls=(ToolCall("search_series", {"query": "Pluto"}),)
+                    )
+                ],
+                [ModelChunk("Nineveh holds "), ModelChunk("eight volumes.")],
+            ]
+        )
+        agent = Librarian(model, ReadOnlyToolRegistry(FakeCatalog()))
+        app = CleoApp(agent, ConversationStore(tmp_path / "state"))
+        async with app.run_test(size=(100, 50)) as pilot:
+            app.query_one("#composer", TextArea).text = "How many Pluto volumes?"
+            await app._submit()
+            await model.paused.wait()
+            await pilot.pause()
+            draft = on_screen(app)[-1]
+            assert draft.endswith("Nineveh holds ") and "eight" not in draft
+            assert status_line(app) == "Searching Nineveh…"
+            assert evidence_on_screen(app) == []  # filed with the finished answer
+
+            model.resume.set()
+            await app._reply_task
+            await pilot.pause()
+            answer = on_screen(app)[-1]
+            assert answer.endswith("\n\nNineveh holds eight volumes.")
+            assert " · " in answer  # the draft became a timestamped message
+            assert evidence_on_screen(app) == ["search_series"]
+            assert status_line(app) == "Ready"
+
+    asyncio.run(exercise())
+
+
+def test_an_answer_no_lookup_backs_never_reaches_the_screen(tmp_path):
+    async def exercise():
+        _, agent = real_agent([[ModelChunk("I remember it has eight volumes.")]])
+        app = CleoApp(agent, ConversationStore(tmp_path / "state"))
+        async with app.run_test(size=(100, 50)) as pilot:
+            await ask(app, pilot, "How many Pluto volumes?")
+            assert on_screen(app)[-1].endswith(UNSUPPORTED_REPLY)
+            assert not any("I remember" in text for text in on_screen(app))
+            assert evidence_on_screen(app) == []
+
+    asyncio.run(exercise())
+
+
+def test_an_ambiguous_title_is_listed_on_screen_and_the_pick_reaches_the_model(
+    tmp_path,
+):
+    async def exercise():
+        model, agent = real_agent(
+            [
+                [
+                    ModelChunk(
+                        tool_calls=(ToolCall("search_series", {"query": "Saga"}),)
+                    )
+                ],
+                [ModelChunk(tool_calls=(ToolCall("get_series", {"series_id": "s2"}),))],
+                [ModelChunk("Twelve volumes.")],
+            ],
+            AmbiguousCatalog(),
+        )
+        app = CleoApp(agent, ConversationStore(tmp_path / "state"))
+        async with app.run_test(size=(100, 50)) as pilot:
+            await ask(app, pilot, "latest Saga?")
+            assert (
+                "1. Saga\n2. Vinland Saga\n\nReply with a number."
+                in (on_screen(app)[-1])
+            )
+
+            await ask(app, pilot, "2")
+            assert model.requests[1][0][-1] == {
+                "role": "user",
+                "content": 'Use the series "Vinland Saga" (id s2).',
+            }
+            assert on_screen(app)[-1].endswith("\n\nTwelve volumes.")
+            assert evidence_on_screen(app) == ["search_series", "get_series"]
+
+    asyncio.run(exercise())
+
+
+def test_what_the_screen_says_when_ollama_is_not_running(tmp_path):
+    def refuse(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    async def exercise():
+        http = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+        model = OllamaChatModel("http://ollama.test", "granite4.2:8b", http)
+        agent = Librarian(model, ReadOnlyToolRegistry(FakeCatalog()))
+        app = CleoApp(agent, ConversationStore(tmp_path / "state"))
+        async with app.run_test(size=(100, 50)) as pilot:
+            await ask(app, pilot, "How many Pluto volumes?")
+            assert on_screen(app)[-1].endswith(
+                "Ollama is unavailable. Start it and confirm granite4.2:8b is installed."
+            )
+            assert status_line(app) == "Ready"
+        await http.aclose()
 
     asyncio.run(exercise())

@@ -8,7 +8,7 @@ from typing import Any
 
 from cleo.domain import AgentEvent, Candidate, Evidence, Identity, Message, ToolCall
 from cleo.ports import CatalogError, ChatModel, ModelError
-from cleo.presentation import plain_text
+from cleo.presentation import plain_text, streamable
 from cleo.tools import ReadOnlyToolRegistry, ToolDispatchError
 
 MAX_TOOL_ROUNDS = 6
@@ -80,6 +80,7 @@ class Librarian:
         for _round in range(MAX_TOOL_ROUNDS):
             content_parts: list[str] = []
             calls: list[ToolCall] = []
+            shown = ""
             try:
                 async for chunk in self._model.stream_chat(
                     messages, self._tools.definitions
@@ -87,7 +88,10 @@ class Librarian:
                     content_parts.append(chunk.content)
                     calls.extend(chunk.tool_calls)
                     if state.grounded and chunk.content:
-                        yield AgentEvent("token", plain_text(chunk.content))
+                        visible = streamable("".join(content_parts))
+                        if len(visible) > len(shown):
+                            yield AgentEvent("token", visible[len(shown) :])
+                            shown = visible
             except ModelError as error:
                 yield AgentEvent("done", str(error))
                 return

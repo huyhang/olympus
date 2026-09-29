@@ -94,8 +94,8 @@ Run the automated checks:
 
 ```sh
 .venv/bin/python -m pytest
-.venv/bin/ruff check src tests
-.venv/bin/ruff format --check src tests
+.venv/bin/ruff check src tests scripts
+.venv/bin/ruff format --check src tests scripts
 ```
 
 A live contract check is included. It uses `http://localhost:8080` unless you
