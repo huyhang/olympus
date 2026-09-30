@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 
-from fakes import AmbiguousCatalog, FakeCatalog, ScriptedModel
-
 from cleo.agent import (
     EMPTY_REPLY,
     MAX_HISTORY_MESSAGES,
@@ -17,6 +15,7 @@ from cleo.domain import Candidate, Identity, Message, ModelChunk, ToolCall
 from cleo.nineveh import CatalogError
 from cleo.ports import ModelError
 from cleo.tools import ReadOnlyToolRegistry
+from fakes import AmbiguousCatalog, FakeCatalog, ScriptedModel
 
 
 class FailingCatalog(FakeCatalog):

@@ -4,8 +4,7 @@ import asyncio
 
 import httpx
 import pytest
-
-from cleo.config import Settings
+from cleo.config import CleoSettings
 from cleo.nineveh import MAX_RESPONSE_BYTES, CatalogError, NinevehCatalogClient
 
 
@@ -15,7 +14,7 @@ def run(awaitable):
 
 def make_client(handler):
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    settings = Settings("http://nineveh.test", "nvh_secret")
+    settings = CleoSettings("http://nineveh.test", "nvh_secret")
     return NinevehCatalogClient(settings, http), http
 
 
@@ -187,8 +186,8 @@ def test_the_client_closes_only_the_transport_it_created():
         borrowed = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
         )
-        NinevehCatalogClient(Settings("http://nineveh.test", "t"), borrowed)
-        owned = NinevehCatalogClient(Settings("http://nineveh.test", "t"))
+        NinevehCatalogClient(CleoSettings("http://nineveh.test", "t"), borrowed)
+        owned = NinevehCatalogClient(CleoSettings("http://nineveh.test", "t"))
         await owned.aclose()
         assert not borrowed.is_closed
         await borrowed.aclose()

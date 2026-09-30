@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
-from cleo.domain import ModelChunk, ToolCall
 from cleo.ports import ModelError
+from olympus.domain import ModelChunk, ToolCall
 
 
 class OllamaChatModel:
@@ -47,7 +47,7 @@ class OllamaChatModel:
                     yield self._parse_chunk(line)
         except httpx.ConnectError as error:
             raise ModelError(
-                "Ollama is unavailable. Start it and confirm granite4.2:8b is installed."
+                f"Ollama is unavailable. Start it and confirm {self._model} is installed."
             ) from error
         except httpx.TimeoutException as error:
             raise ModelError("Ollama did not respond in time.") from error

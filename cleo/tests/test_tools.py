@@ -4,7 +4,6 @@ import asyncio
 from typing import Any
 
 import pytest
-
 from cleo.domain import ToolCall
 from cleo.tools import ReadOnlyToolRegistry, ToolDispatchError
 

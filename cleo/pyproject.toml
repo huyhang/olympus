@@ -1,48 +1,25 @@
-[build-system]
-requires = ["hatchling>=1.27"]
-build-backend = "hatchling.build"
-
-[project]
-name = "cleo"
-version = "0.1.0"
-description = "A librarian agent for a Nineveh comic and manga library"
-readme = "README.md"
-# Matches Nineveh, whose CI runs 3.12. Keeping the floor the same means a
-# construct that works here cannot fail over there for version reasons.
-requires-python = ">=3.12"
-dependencies = [
-  "httpx>=0.28,<1",
-  "textual>=1,<7",
-]
-
-[project.scripts]
-cleo = "cleo.app:main"
-
-[project.optional-dependencies]
-test = [
-  "httpx>=0.28,<1",
-  "pytest>=8.3,<9",
-  "pytest-cov>=6,<8",
-  "ruff>=0.9,<1",
-]
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/cleo"]
+# Cleo's own test configuration. Cleo is not a separate distribution: it ships
+# inside `olympus-agents`, the repository-root package, which also registers it
+# under the `olympus.agents` entry point. Keeping a second distribution here
+# would ship the `cleo` package twice and depend on a name, `olympus`, that on
+# PyPI belongs to an unrelated project.
+#
+# Cleo's floor matches Nineveh, whose CI runs Python 3.12, so a construct that
+# works here cannot fail over there for version reasons.
 
 [tool.pytest.ini_options]
 # The 90% Nineveh holds itself to, now that there is implementation to cover.
 # The suite currently sits well above it; the gate is the floor, not the target.
 addopts = "-q --cov=cleo --cov-fail-under=90"
 testpaths = ["tests"]
-# `scripts` for the fake backends, whose tests keep them honest to the adapters.
-pythonpath = ["src", "scripts"]
+# `scripts` for the fake backends, whose tests keep them honest to the adapters,
+# and `../src` for the Olympus contracts Cleo implements, so this suite also
+# runs on its own from `cleo/`.
+pythonpath = ["src", "scripts", "../src"]
 
 [tool.coverage.run]
 source = ["cleo"]
 branch = true
-# `python -m cleo` only ever runs in a fresh interpreter, so process-local
-# coverage cannot see it. It is four lines that call `main`, which is tested.
-omit = ["src/cleo/__main__.py"]
 
 [tool.coverage.report]
 exclude_also = ["if TYPE_CHECKING:", "\\.\\.\\."]

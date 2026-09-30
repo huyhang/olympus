@@ -1,19 +1,21 @@
 # Getting started with Cleo
 
-Cleo is a local, read-only librarian for a Nineveh catalog. It uses Ollama's
-`granite4.2:8b` model to understand questions and Nineveh's API as the only
-source of catalog facts.
+Cleo is a local, read-only librarian for a Nineveh catalog. It uses an Ollama
+model (`granite4.2:8b` by default) to understand questions and Nineveh's API
+as the only source of catalog facts. It runs inside Olympus, the terminal
+interface at the repository root, which owns its settings, credentials, and
+conversation history.
 
 ## 1. Check the prerequisites
 
 You need:
 
-- Python 3.12 or newer
+- macOS with Python 3.12 or newer, and [pipx](https://pipx.pypa.io/stable/installation/)
 - A running Nineveh server
 - A Nineveh librarian token with only `catalog:read` and `metadata:read`
 - A running Ollama service with `granite4.2:8b` installed
 
-From the Cleo repository, check Python and Ollama:
+Check Python and Ollama:
 
 ```sh
 python3 --version
@@ -29,22 +31,23 @@ ollama pull granite4.2:8b
 Do not grant the Cleo token `ingest:stage` or `ingest:commit`. Cleo does not
 need either permission.
 
-## 2. Create the Python environment
+## 2. Install Olympus
 
-Run these commands from the repository root:
-
-```sh
-python3 -m venv .venv
-.venv/bin/pip install -e '.[test]'
-```
-
-Confirm that Cleo imports from this checkout:
+From the repository root:
 
 ```sh
-.venv/bin/python -c "import cleo; print(cleo.__file__)"
+pipx install "$PWD"
 ```
 
-The printed path should end in this repository's `src/cleo/__init__.py`.
+This installs the `olympus-agents` package and puts the `olympus` command on
+your `PATH`; it runs from any directory. Install from the checkout like this
+rather than by name: PyPI's `olympus` is an unrelated project. If an earlier
+build is installed as `olympus`, run `pipx uninstall olympus` first.
+
+To upgrade later, `git pull --ff-only` and then
+`pipx reinstall olympus-agents` (`pipx upgrade` does not pick up changes from a
+local checkout). Your agents, conversations, and credentials live outside the
+installed code and survive both.
 
 ## 3. Create a read-only Nineveh credential
 
@@ -56,63 +59,34 @@ In Nineveh, open **Admin → Librarian** and issue a token containing only:
 Nineveh displays the token once. If it is lost, issue a replacement instead of
 trying to recover it.
 
-## 4. Configure Cleo
+## 4. Add Cleo in Olympus
 
-Create a private configuration file from the template:
-
-```sh
-cp .env.example .env
-chmod 600 .env
-```
-
-Edit `.env` and set the Nineveh address and token:
-
-```dotenv
-NINEVEH_URL=http://localhost:8080
-NINEVEH_TOKEN=paste_the_token_here
-
-OLLAMA_URL=http://localhost:11434
-CLEO_MODEL=granite4.2:8b
-```
-
-Use the actual Nineveh address if it is not running locally. Do not commit or
-share `.env`. Real environment variables override values in the file.
-
-Conversation history defaults to `~/.local/share/cleo`. To use another private
-location, add:
-
-```dotenv
-CLEO_STATE_DIR=/your/private/path/cleo
-```
-
-Cleo creates the state directory with mode `0700` and its database and exports
-with mode `0600`.
-
-## 5. Verify the installation
-
-Run the automated checks:
+Launch Olympus:
 
 ```sh
-.venv/bin/python -m pytest
-.venv/bin/ruff check src tests scripts
-.venv/bin/ruff format --check src tests scripts
+olympus
 ```
 
-A live contract check is included. It uses `http://localhost:8080` unless you
-set `NINEVEH_URL` in the command environment, and skips automatically when
-that server is unavailable:
+It starts empty. Choose **＋ Add** (or press `Ctrl+A`, then `a`), select
+**Cleo**, and fill in:
 
-```sh
-NINEVEH_URL=http://your-nineveh-host:8080 .venv/bin/python -m pytest
-```
+- **Nineveh URL** — for example `http://localhost:8080`, or the Tailscale name
+  when Nineveh runs elsewhere
+- **Nineveh token** — the token from step 3
 
-## 6. Start Cleo
+Leave the Ollama URL and model blank to use Olympus's defaults
+(`http://localhost:11434` and `granite4.2:8b`), or fill them in for this Cleo
+only. Choose **Test connection** to check Nineveh and Ollama without leaving
+the form, then **Save agent**.
 
-Ensure Nineveh and Ollama are running, then launch the terminal interface:
+The token goes to macOS Keychain. If Keychain cannot keep it, Olympus stores
+it in an owner-only file in its data directory instead; the agent manager
+shows which.
 
-```sh
-.venv/bin/cleo
-```
+Add more Cleos the same way when different libraries, credentials, or models
+should stay separate.
+
+## 5. Ask a question
 
 Try a catalog question such as:
 
@@ -120,7 +94,7 @@ Try a catalog question such as:
 What's the latest Vinland Saga volume I have?
 ```
 
-Cleo will show its current activity and attach expandable Nineveh evidence to
+Cleo shows its current activity and attaches expandable Nineveh evidence to
 the answer.
 
 If the name matches several series and Nineveh cannot pick one, Cleo stops and
@@ -138,15 +112,19 @@ Reply with a number.
 Type the number. Typing anything else abandons the list and is treated as a
 new question.
 
-## 7. Learn the controls
+## 6. Learn the controls
 
-- Enter sends a message.
-- Shift+Enter inserts a newline.
-- Esc cancels the current response.
-- Ctrl+N starts a new conversation.
-- Ctrl+H opens searchable conversation history.
-- Ctrl+S opens librarian settings.
-- Ctrl+Q exits Cleo.
+- Enter sends a message; Shift+Enter or Ctrl+J inserts a newline.
+- Esc cancels the response on screen.
+- Ctrl+K opens the command palette: switch agents, open recent conversations.
+- Ctrl+G moves to the agent list; arrows and Enter switch agents.
+- Ctrl+A manages agents: add, edit, remove, restore, and Ollama defaults.
+- Ctrl+N starts a new conversation; Ctrl+R opens searchable history.
+- Ctrl+S edits this agent's name, persona, and answer style.
+- Ctrl+Q exits Olympus.
+
+Switching agents keeps each one's open conversation and unsent text, and a
+reply in progress keeps running; Olympus tells you when it finishes.
 
 The interface also supports these local commands:
 
@@ -154,7 +132,8 @@ The interface also supports these local commands:
 /new                       start a conversation
 /history [search]          search and resume history
 /open ID                   resume by displayed ID prefix
-/name NAME                 rename the librarian
+/agent NUMBER|NAME         switch to another agent
+/name NAME                 rename this agent
 /persona [instructions]    edit presentation preferences
 /style compact|detailed    choose the default answer depth
 /export [ID]               export a Markdown transcript
@@ -162,24 +141,53 @@ The interface also supports these local commands:
 /help                      display command help
 ```
 
-Local commands are handled by the TUI and are never sent to the language
-model. Clearing history requires confirmation and can delete only records in
-Cleo's own conversation database.
+Local commands are handled by Olympus and are never sent to the language
+model. Clearing history requires confirmation and can delete only that
+agent's records in Olympus's own database.
+
+## Data and upgrades
+
+On macOS, persistent state lives in:
+
+```text
+~/Library/Application Support/Olympus
+```
+
+`olympus --data-dir` prints the location. It is outside pipx's managed
+environment, so `pipx reinstall olympus-agents` replaces the application without
+touching conversations or configuration. Before a new version changes the
+database schema, Olympus writes a private backup, then migrates in a single
+transaction per version.
+
+This is intentionally a clean break from the former standalone Cleo app.
+Olympus neither imports nor removes `~/.local/share/cleo`, and no longer reads
+`cleo/.env` or `NINEVEH_TOKEN`.
+
+## Test without Ollama or Nineveh
+
+From a development environment installed with `pip install -e '.[test]'` at
+the repository root:
+
+```sh
+.venv/bin/python cleo/scripts/fake_backends.py --launch
+```
+
+The harness configures a throwaway Cleo and starts the real Olympus TUI
+against scripted Ollama and Nineveh stand-ins. The scripted keywords are
+listed in the [Cleo README](../README.md#trying-olympus-without-ollama-or-nineveh).
 
 ## Troubleshooting
 
-### Cleo says no token is configured
+### Saving the agent says a token is required
 
-Confirm that `.env` contains `NINEVEH_TOKEN` and is located in the repository
-root. Cleo will explain how to fix an absent token.
+Paste the Nineveh token into the form. When editing an existing Cleo, leaving
+the token blank keeps the stored one.
 
-### Cleo refuses to read `.env`
+### Saving says a URL is not valid
 
-The file is readable by another account. Restore private permissions:
-
-```sh
-chmod 600 .env
-```
+Olympus checks URLs when you save, so a typo such as a letter in the port is
+caught before the first question. URLs need `http://` or `https://` and a
+host.
 
 ### Ollama is unavailable
 
@@ -189,13 +197,27 @@ Check that Ollama is running and that the configured model exists:
 ollama list
 ```
 
-Also confirm that `OLLAMA_URL` points to the running service.
+Also confirm the Ollama URL under **Agents → Defaults**, or the agent's own
+override. `OLLAMA_URL` in the environment overrides the saved default for that
+session; the Defaults screen says when it does. **Test connection** reports
+which service failed.
 
 ### Nineveh is unavailable or denies access
 
-Confirm that `NINEVEH_URL` is reachable and that the token is current. A `403`
-usually means the token lacks access to the requested library or one of the two
-read capabilities.
+Confirm that the Nineveh URL is reachable and that the token is current. A
+`403` usually means the token lacks access to the requested library or one of
+the two read capabilities.
+
+### Removing Cleo reports a Keychain problem
+
+The agent and its history are removed either way. If Keychain refuses to
+delete the token, remove the `dev.olympus.agents` entry for it in Keychain
+Access.
+
+### History is not on Ctrl+H
+
+Many terminals send Ctrl+H as Backspace, so Olympus uses Ctrl+R for history.
+Ctrl+H still works in terminals that send it as its own key.
 
 ### Cleo declines a request
 
@@ -212,5 +234,6 @@ is answered without searching again.
 
 Cleo disables the model's thinking mode, which is most of the difference.
 If turns are still slow, the model is the cost: `granite4.2:8b` is the
-default, and `CLEO_MODEL` can point at anything Ollama serves. The interface
-names the model that is answering, so you can confirm which one is loaded.
+default, and the Ollama defaults or the agent's own model setting can point at
+anything Ollama serves. The interface names the model that is answering, so
+you can confirm which one is loaded.

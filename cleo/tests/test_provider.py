@@ -1,0 +1,114 @@
+"""Cleo's plug-in boundary: validation, probing, and opening real adapters."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+
+import pytest
+from cleo.config import CleoSettings
+from cleo.provider import CleoProvider
+from fake_backends import DEFAULT_SCENARIO, FakeBackends, Scenario
+
+from olympus.domain import AgentProfile, OllamaDefaults
+from olympus.ports import ProviderError
+
+
+class DictSecrets:
+    def __init__(self, values):
+        self.values = values
+
+    def get(self, agent_id, key):
+        return self.values.get((agent_id, key))
+
+
+@pytest.fixture
+def backend():
+    server = FakeBackends(Scenario.load(DEFAULT_SCENARIO), port=0, delay=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+def cleo_profile(url: str) -> AgentProfile:
+    return AgentProfile(
+        id="cleo-one", kind="cleo", name="Cleo", settings={"nineveh_url": url}
+    )
+
+
+def test_cleo_provider_validates_probes_and_opens_real_adapters(backend):
+    provider = CleoProvider()
+    profile = cleo_profile(backend.url)
+    secrets = {"nineveh_token": "nvh_fake"}
+    assert provider.validate(profile, secrets) == {}
+    asyncio.run(provider.probe(profile, secrets, OllamaDefaults(backend.url, "fake")))
+    with pytest.raises(ProviderError, match="not installed"):
+        asyncio.run(
+            provider.probe(profile, secrets, OllamaDefaults(backend.url, "missing"))
+        )
+
+    stored = DictSecrets({(profile.id, "nineveh_token"): "nvh_fake"})
+    runtime = provider.open(profile, stored, OllamaDefaults(backend.url, "fake"))
+    events = asyncio.run(_exercise(runtime))
+    assert events[-1].text.startswith("The latest Vinland Saga")
+    assert runtime.model == "fake"
+
+
+def test_cleo_provider_rejects_bad_configuration_and_failed_probes():
+    provider = CleoProvider()
+    assert set(provider.validate(cleo_profile("not-a-url"), {})) == {
+        "nineveh_url",
+        "nineveh_token",
+    }
+    typo = provider.validate(
+        cleo_profile("http://localhost:808o"), {"nineveh_token": "t"}
+    )
+    assert typo == {"nineveh_url": "Nineveh URL is not a valid URL."}
+    with pytest.raises(ProviderError, match="token"):
+        provider.open(cleo_profile("http://nineveh"), DictSecrets({}), OllamaDefaults())
+    with pytest.raises(ProviderError, match="Nineveh"):
+        asyncio.run(
+            provider.probe(
+                cleo_profile("http://127.0.0.1:1"),
+                {"nineveh_token": "token"},
+                OllamaDefaults("http://127.0.0.1:1", "fake"),
+            )
+        )
+
+
+def test_each_cleo_uses_its_own_token_whatever_the_environment_says(monkeypatch):
+    monkeypatch.setenv("NINEVEH_TOKEN", "shell-token")
+    provider = CleoProvider()
+    assert "nineveh_token" in provider.validate(cleo_profile("http://nineveh"), {})
+    settings = CleoProvider._settings(
+        cleo_profile("http://nineveh"),
+        {"nineveh_token": "instance-token"},
+        OllamaDefaults(),
+    )
+    assert settings.authorization == {"Authorization": "Bearer instance-token"}
+
+
+def test_cleo_runtime_settings_never_reveal_the_token():
+    settings = CleoSettings("http://nineveh", "top-secret")
+    assert "top-secret" not in repr(settings)
+    assert settings.authorization == {"Authorization": "Bearer top-secret"}
+
+
+async def _exercise(runtime):
+    try:
+        return [
+            event
+            async for event in runtime.session.respond(
+                [],
+                "What's the latest Vinland Saga volume?",
+                cleo_profile("").identity,
+            )
+        ]
+    finally:
+        await _close(runtime)
+
+
+async def _close(runtime):
+    for callback in runtime.close_async:
+        await callback()

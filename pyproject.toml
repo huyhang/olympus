@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+# The distribution is `olympus-agents` because PyPI's `olympus` is an unrelated
+# project; a bare `pipx install olympus` would fetch it. The command, import
+# package, and data directory are all still `olympus`. Cleo ships inside this
+# distribution, so agent packages should depend on `olympus-agents`.
+name = "olympus-agents"
+version = "0.1.0"
+description = "A polished terminal home for local Ollama agents"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.28,<1",
+  "keyring>=25,<26",
+  "textual>=1,<7",
+]
+
+[project.scripts]
+olympus = "olympus.cli:main"
+
+[project.entry-points."olympus.agents"]
+cleo = "cleo.provider:CleoProvider"
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<8",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/olympus", "cleo/src/cleo"]
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=src/olympus --cov=cleo/src/cleo --cov-fail-under=90"
+testpaths = ["tests", "cleo/tests"]
+pythonpath = ["src", "cleo/src", "cleo/scripts"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/olympus", "cleo/src/cleo"]
+omit = ["src/olympus/__main__.py"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "\\.\\.\\."]

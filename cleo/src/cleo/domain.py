@@ -1,12 +1,22 @@
-"""Small domain values shared by Cleo's adapters."""
+"""Cleo-specific domain constants.
+
+Shared conversation and model values are owned by Olympus and re-exported here
+temporarily for source compatibility with Cleo integrations.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any, Literal
-
-Role = Literal["user", "assistant"]
+from olympus.domain import (
+    AgentEvent,
+    Candidate,
+    Conversation,
+    Evidence,
+    Identity,
+    Message,
+    ModelChunk,
+    ToolCall,
+    utc_now,
+)
 
 # The metadata fields Nineveh's series search accepts, and how long each may
 # be. Declared once: the catalog adapter and the model-facing tool registry
@@ -23,72 +33,15 @@ SEARCH_FIELD_LIMITS: dict[str, int] = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-@dataclass(frozen=True, slots=True)
-class Message:
-    role: Role
-    content: str
-    created_at: str = field(default_factory=utc_now)
-
-
-@dataclass(frozen=True, slots=True)
-class Conversation:
-    id: str
-    title: str
-    created_at: str
-    updated_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class Identity:
-    name: str = "Cleo"
-    persona: str = ""
-    response_style: Literal["compact", "detailed"] = "compact"
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCall:
-    name: str
-    arguments: dict[str, Any]
-    call_id: str = ""
-
-    def as_message_value(self) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "function": {"name": self.name, "arguments": self.arguments}
-        }
-        if self.call_id:
-            value["id"] = self.call_id
-        return value
-
-
-@dataclass(frozen=True, slots=True)
-class ModelChunk:
-    content: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class Evidence:
-    tool: str
-    payload: Any
-    retrieved_at: str = field(default_factory=utc_now)
-    arguments: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class Candidate:
-    """One series Nineveh offered when it could not pick a single match."""
-
-    id: str
-    title: str
-
-
-@dataclass(frozen=True, slots=True)
-class AgentEvent:
-    kind: Literal["status", "token", "evidence", "choice", "done"]
-    text: str = ""
-    evidence: Evidence | None = None
-    candidates: tuple[Candidate, ...] = ()
+__all__ = [
+    "SEARCH_FIELD_LIMITS",
+    "AgentEvent",
+    "Candidate",
+    "Conversation",
+    "Evidence",
+    "Identity",
+    "Message",
+    "ModelChunk",
+    "ToolCall",
+    "utc_now",
+]

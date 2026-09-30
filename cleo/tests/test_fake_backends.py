@@ -14,14 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fake_backends import DEFAULT_SCENARIO, FakeBackends, Scenario
-
 from cleo.agent import UNSUPPORTED_REPLY, Librarian
-from cleo.config import Settings
+from cleo.config import CleoSettings
 from cleo.domain import AgentEvent, Identity
 from cleo.nineveh import NinevehCatalogClient
 from cleo.ollama import OllamaChatModel
 from cleo.tools import ReadOnlyToolRegistry
+from fake_backends import DEFAULT_SCENARIO, FakeBackends, Scenario
 
 CONTRACT = (
     Path(__file__).resolve().parent.parent / "contracts" / "librarian-openapi.json"
@@ -37,8 +36,8 @@ def server():
     backends.server_close()
 
 
-def settings(server: FakeBackends) -> Settings:
-    return Settings(nineveh_url=server.url, token="nvh_fake", ollama_url=server.url)
+def settings(server: FakeBackends) -> CleoSettings:
+    return CleoSettings(nineveh_url=server.url, token="nvh_fake", ollama_url=server.url)
 
 
 def ask(server: FakeBackends, question: str) -> list[AgentEvent]:
@@ -80,7 +79,7 @@ def test_an_ambiguous_title_offers_a_choice_and_either_pick_is_scripted(server):
         "Vinland Saga",
     ]
     for candidate in choice.candidates:
-        # The question CleoApp sends when the user answers with a number.
+        # The question Olympus sends when the user answers with a number.
         picked = ask(server, f'Use the series "{candidate.title}" (id {candidate.id}).')
         assert evidence(picked)[-1].arguments == {"series_id": candidate.id}
         assert picked[-1].kind == "done"

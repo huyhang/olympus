@@ -4,7 +4,8 @@ New installation? Follow the [getting-started guide](doc/getting-started.md).
 
 A librarian agent for Nineveh (API contract in the `contracts` directory).
 Cleo answers questions about what is in the library, driven by a small
-language model running locally.
+language model running locally. It runs inside [Olympus](../README.md), the
+terminal home for this repository's agents, as an installed agent type.
 
 Named for Clio, the Muse of history — conventionally depicted holding the
 scrolls, which is roughly the job.
@@ -34,23 +35,32 @@ filename consistent with the ones already there (`vinland_saga_v12.cbz` →
 `Vinland Saga 012.cbz`), and shows exactly where it would land. It is placed
 only after that proposal is accepted.
 
-The current front end is a local, full-screen terminal application. A remote
-front end over Tailscale remains a later step.
+The front end is Olympus: a local, full-screen terminal application shared by
+every agent. A remote front end over Tailscale remains a later step.
 
-## Relationship with Nineveh
+## Relationship with Nineveh and Olympus
 
 **Nineveh owns everything that matters.** The catalog, the metadata, the files
 on disk, and the authorization. Cleo holds no library state of its own — it is
-a client, and a deliberately narrow one.
+a client, and a deliberately narrow one. **Olympus owns the rest**: the
+interface, each Cleo instance's settings and credentials, and the
+conversation history.
 
 ```
-Terminal ───────────► Cleo (harness + tools) ─► Nineveh /api/v1/librarian/*
-                              │                        │
-                         local model                catalog, metadata,
-                          (Ollama)                     authorization
+Olympus TUI ────► Cleo (harness + tools) ─► Nineveh /api/v1/librarian/*
+                          │                        │
+                     local model                catalog, metadata,
+                      (Ollama)                     authorization
 ```
 
-The division is not a matter of taste:
+Cleo plugs into Olympus through `cleo.provider.CleoProvider`, registered under
+the `olympus.agents` entry-point group. It ships inside the repository's
+single distribution, `olympus-agents`, rather than as a package of its own;
+`cleo/pyproject.toml` holds only its test configuration. It declares its settings (a Nineveh
+URL and a secret token), validates and probes them, and opens a runtime for
+each configured instance. Cleo contains no interface code.
+
+The division with Nineveh is not a matter of taste:
 
 - **Nineveh enforces permissions; Cleo's prompt does not.** A token carries an
   explicit set of capabilities and may be restricted to particular libraries.
@@ -74,7 +84,7 @@ The division is not a matter of taste:
 | `ingest:stage` | Validate and stage a volume — writes nothing to the library |
 | `ingest:commit` | Place a staged volume on disk |
 
-The current Cleo process should receive only `catalog:read` and
+Each Cleo instance's token should carry only `catalog:read` and
 `metadata:read`. Its compiled tool registry contains four operations: list
 libraries, search series by name, find series by author, and read one series.
 The ingest operations in the vendored contract are not loaded dynamically and
@@ -107,10 +117,10 @@ contract change arrives as a reviewable diff. Deliberately **not** the whole
 `openapi.json` — that describes 60 operations, and every unrelated Nineveh
 change would churn this repo and bury the signal that matters.
 
-Refresh it, and the provenance beside it, with:
+Refresh it, and the provenance beside it, from this directory with:
 
 ```sh
-scripts/refresh-contract.sh            # assumes ../../nineveh
+scripts/refresh-contract.sh            # assumes a nineveh checkout beside this repo
 scripts/refresh-contract.sh /path/to/nineveh
 git diff contracts/                    # the diff is the point — read it
 ```
@@ -118,12 +128,11 @@ git diff contracts/                    # the diff is the point — read it
 `tests/test_contract.py` guards both halves: that the file matches its recorded
 hash, carries no dangling `$ref` and asks for a token on every operation, and —
 when a Nineveh is reachable — that its paths, and the schemas and auth scheme
-they reference, still match the running server. The live check *skips* rather than fails
-when Nineveh is down, so it can run on every local `pytest`.
+they reference, still match the running server. The live check *skips* rather
+than fails when Nineveh is down, so it can run on every local `pytest`:
 
 ```sh
-pytest tests/                          # needs httpx and pytest
-NINEVEH_URL=http://nineveh.your-tailnet.ts.net pytest tests/
+NINEVEH_URL=http://nineveh.your-tailnet.ts.net .venv/bin/python -m pytest cleo/tests
 ```
 
 Pin on the sha256, not on `info.version`: the version tracks Nineveh's package
@@ -135,70 +144,45 @@ Cleo authenticates to Nineveh with a bearer token issued under
 **Admin → Librarian**. Nineveh shows it once and stores only a hash, so a lost
 token is reissued rather than recovered.
 
-```sh
-cp .env.example .env && chmod 600 .env
-$EDITOR .env                      # paste NINEVEH_TOKEN, set NINEVEH_URL
-```
+Enter it when adding a Cleo in Olympus (**＋ Add → Cleo**). Olympus stores it
+in macOS Keychain, falling back to an owner-only (`0600`) file in its data
+directory only when Keychain cannot keep it; the agent manager shows which.
+Editing an agent leaves the stored token in place unless a new one is typed.
+For automation, `OLYMPUS_SECRET_<AGENT_ID>_NINEVEH_TOKEN` supplies one
+instance's token without storing it (see the Olympus README).
 
-`.env` is gitignored; `.env.example` is the committed template and carries no
-value. Real environment variables override the file, so a container or CI job
-can supply the token without one.
+Every instance uses its own token: several Cleos can point at different
+libraries with differently scoped credentials. The standalone app's
+`NINEVEH_TOKEN` variable and `cleo/.env` file are no longer read.
 
-```python
-from cleo.config import Settings
-
-settings = Settings.load()
-httpx.get(f"{settings.nineveh_url}/api/v1/librarian/libraries",
-          headers=settings.authorization)
-```
-
-Three things the loader does on purpose:
-
-- **Refuses a token file other accounts can read**, with the `chmod` to fix it.
-  A secret readable by every account on the NAS is not one. The check applies
-  only to a file that actually holds a token, so the template stays readable.
-- **Redacts the token from `repr()`.** The default dataclass repr would put it
-  into every traceback and log line that touched the object.
-- **Says what to do when it is missing**, rather than failing with a `KeyError`
-  three frames deep.
+The runtime settings object redacts the token from `repr()`, so it never
+reaches a traceback or log line.
 
 **Grant only what the deployment needs.** This iteration needs only
 `catalog:read` and `metadata:read`. Omitting both ingest capabilities makes
 Nineveh independently enforce the same read-only boundary as Cleo.
 
-Ollama defaults to `http://localhost:11434` and the model defaults to
-`granite4.2:8b`. Both can be made explicit in `.env`:
+## Using Cleo in Olympus
 
-```sh
-OLLAMA_URL=http://localhost:11434
-CLEO_MODEL=granite4.2:8b
-```
-
-## Run Cleo
-
-```sh
-python3 -m venv .venv
-.venv/bin/pip install -e '.[test]'
-.venv/bin/cleo
-```
-
-Press Enter to send and Shift+Enter for a newline. The interface streams the
-answer, shows when Nineveh is being queried, and attaches expandable evidence
-to factual responses. `Esc` cancels a response. `Ctrl+H`, `Ctrl+S`, and
-`Ctrl+N` open history, settings, and a new conversation.
+Choose Cleo in the sidebar, or press `Ctrl+G` and pick it, and ask. The
+interface streams the answer, shows when Nineveh is being queried, and
+attaches expandable evidence to factual responses. `Esc` cancels a response.
+The full set of keys is in the Olympus README.
 
 When a title matches several series and Nineveh reports no confident match,
 Cleo stops and shows a numbered list; reply with a number. The choice is made
 by the interface, not the model, so a loose name can never resolve to the
-wrong series silently. A single confident match is used without asking.
+wrong series silently. A single confident match is used without asking. The
+list waits for you even if you visit another agent first.
 
-Local slash commands are parsed before input reaches the model:
+Local slash commands are parsed by Olympus before input reaches the model:
 
 ```text
 /new                       start a conversation
 /history [search]          search and resume history
 /open ID                   resume by displayed ID prefix
-/name NAME                 rename the librarian
+/agent NUMBER|NAME         switch to another agent
+/name NAME                 rename this agent
 /persona [instructions]    edit its presentation preferences
 /style compact|detailed    choose the default answer depth
 /export [ID]               write a new Markdown transcript
@@ -206,18 +190,17 @@ Local slash commands are parsed before input reaches the model:
 /help                      show command help
 ```
 
-History and settings live in `~/.local/share/cleo/history.sqlite3` by default.
-The directory is owner-only (`0700`) and the database and exports are `0600`.
-Set `CLEO_STATE_DIR` to choose another location. History has no automatic
-expiration. Export uses a new filename and refuses to overwrite an existing
-file.
+History lives in Olympus's database (`olympus --data-dir`), which is
+owner-only, as are its exports. History has no automatic expiration. Export
+uses a new filename and refuses to overwrite an existing file.
 
-The name and persona are customizable. Catalog grounding, read-only behavior,
-and tool restrictions are an immutable part of the system prompt and are also
-enforced by code. Model output is never interpreted as a command. The model
-has no shell, subprocess, filesystem, generic HTTP, or ingest tool; an unknown
-tool request is rejected. Clearing history is separate trusted UI code,
-requires confirmation, and can affect only rows in Cleo's own database.
+The name and persona are customizable per instance. Catalog grounding,
+read-only behavior, and tool restrictions are an immutable part of the system
+prompt and are also enforced by code. Model output is never interpreted as a
+command. The model has no shell, subprocess, filesystem, generic HTTP, or
+ingest tool; an unknown tool request is rejected. Clearing history is separate
+trusted UI code, requires confirmation, and can affect only that agent's rows
+in Olympus's database.
 
 Two boundaries are worth naming because they are where model output meets
 something that would otherwise act on it:
@@ -238,42 +221,54 @@ claim in a conversation always requires a tool result.
 
 ## Development
 
+Work from the repository root with its single environment; `pytest` there runs
+the Olympus and Cleo suites together:
+
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -e '.[test]'
 .venv/bin/python -m pytest
-.venv/bin/ruff check src tests scripts && .venv/bin/ruff format --check src tests scripts
+.venv/bin/ruff check src cleo/src tests cleo/tests cleo/scripts
+```
+
+Cleo's suite also runs on its own, holding the package to its own 90%
+coverage floor:
+
+```sh
+cd cleo && ../.venv/bin/python -m pytest
 ```
 
 No ruff configuration on purpose — Nineveh has none either, and ruff's defaults
 already cover the rule set both repositories are checked against. Adding config
-here would let the two drift.
+here would let the two drift. Lint from the repository root: import sorting
+classifies packages by where ruff runs, and the root is the reference.
 
-`pytest` holds itself to the 90% coverage Nineveh uses; the suite currently
-sits well above that floor.
+### Trying Olympus without Ollama or Nineveh
 
-### Trying the interface without Ollama or Nineveh
+From the repository root:
 
 ```sh
-.venv/bin/python scripts/fake_backends.py --launch
+.venv/bin/python cleo/scripts/fake_backends.py --launch
 ```
 
-This runs the real TUI against scripted stand-ins for both services on one
-local port, with throwaway history. The identity bar reads `fake:demo`, so a
-fake session is never mistaken for a real one. Both fakes are needed: an
-answer no Nineveh read backs is replaced before it reaches the screen, so a
-fake model alone would only ever produce the refusal.
+This runs the real Olympus TUI with a preconfigured Cleo against scripted
+stand-ins for both services on one local port, with throwaway state; tokens
+never reach Keychain. The identity bar reads `fake:demo`, so a fake session is
+never mistaken for a real one. Both fakes are needed: an answer no Nineveh
+read backs is replaced before it reaches the screen, so a fake model alone
+would only ever produce the refusal.
 
 `scripts/scenarios/demo.json` scripts a reply for each state the interface can
 be in. Mention its keywords in a question: `vinland` for a streamed answer with
 evidence, `saga` for the numbered pick list, `urasawa` for an author search,
-`slow` for a reply you can cancel with Esc, `berserk` for a Nineveh `403`,
+`libraries` for the library listing, `slow` for a reply you can cancel with
+Esc (or leave running while you switch agents), `berserk` for a Nineveh `403`,
 `delete` for a refused tool call, `broken`, `crash` and `garbled` for Ollama
-failures, `markdown` for rich formatting, and `ansi` for escape-code stripping.
-Anything else gets the no-lookup refusal.
+failures, `markdown` for rich formatting, and `ansi` for escape-code
+stripping. Anything else gets the no-lookup refusal.
 
 Run it without `--launch` to see each request logged as it arrives, and point
-Cleo at it from another terminal using the command it prints. A different
+Olympus at it from another terminal using the command it prints. A different
 scenario file can be passed as an argument; the file format is described at
 the top of the script.
 
@@ -281,24 +276,25 @@ the top of the script.
 contracts/    the vendored API slice and its provenance
 doc/          the getting-started guide
 scripts/      re-vendoring, and fake backends for trying the TUI
-src/cleo/     domain, read-only adapters, agent loop, persistence, and TUI
-tests/        unit, adapter, UI, wiring, and contract tests
+src/cleo/     agent loop, read-only adapters, tools, and the Olympus provider
+tests/        unit, adapter, provider, and contract tests
 ```
 
-`requires-python` is `>=3.12` to match Nineveh's CI, though the local venv is
-whatever `python3` resolves to. **Never copy a `.venv` between checkouts**: the
+The root `pyproject.toml` sets `requires-python` to `>=3.12` to match
+Nineveh's CI, though the local venv is whatever `python3` resolves to. **Never copy a `.venv` between checkouts**: the
 editable install records an absolute path, so a copied environment silently
 imports the other project's source. Recreate it, then confirm:
 
 ```sh
-.venv/bin/python -c "import cleo; print(cleo.__file__)"   # must be under ./src
+.venv/bin/python -c "import cleo; print(cleo.__file__)"   # must be under ./cleo/src
 ```
 
 ## Implemented shape
 
-- **Model:** `granite4.2:8b` through Ollama's streaming chat API, with thinking
-  explicitly disabled — it costs several seconds a turn and Cleo discards it.
-  `CLEO_MODEL` selects another, and the interface shows which one is answering.
+- **Model:** `granite4.2:8b` through Ollama's streaming chat API by default,
+  with thinking explicitly disabled — it costs several seconds a turn and Cleo
+  discards it. Olympus's defaults or a per-instance override select another,
+  and the interface shows which one is answering.
 - **Harness:** a purpose-built, bounded tool loop. A conversation with no
   successful Nineveh read behind it gets a fixed safe response instead of an
   answer. Ambiguity is resolved by the interface, never by the model.
@@ -306,12 +302,12 @@ imports the other project's source. Recreate it, then confirm:
   four clearly named model tools. The model supplies search fields or a series
   ID, never a method, host, or URL. When Nineveh explains a refusal, that
   explanation is passed through rather than flattened to a status code.
-- **Persistence:** SQLite behind a conversation-store interface, with searchable
+- **Provider:** validates the Nineveh URL and token, probes Nineveh and Ollama
+  on request, and opens one runtime per configured instance.
+- **Persistence and interface:** owned by Olympus — per-agent searchable
   transcripts, resumption, explicit clearing, preferences, and Markdown export.
-  An answer is filed against the conversation it was asked in, even if you have
-  moved on or quit before it finished.
-- **TUI:** Textual, with a single-pane chat and separate history, confirmation,
-  and settings screens.
+  An answer is filed against the conversation it was asked in, even if you
+  have moved on to another conversation or agent before it finished.
 
 Ollama and Nineveh are the only network peers. Remote access and the future
 ingest workflow are intentionally outside this iteration.

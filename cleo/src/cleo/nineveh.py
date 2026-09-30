@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from cleo.config import Settings
+from cleo.config import CleoSettings
 from cleo.domain import SEARCH_FIELD_LIMITS
 from cleo.ports import CatalogError
 
@@ -24,7 +24,7 @@ class NinevehCatalogClient:
 
     def __init__(
         self,
-        settings: Settings,
+        settings: CleoSettings,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = settings.nineveh_url

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Scripted stand-ins for Ollama and Nineveh, for exercising Cleo's interface.
+"""Scripted stand-ins for Ollama and Nineveh, for exercising Olympus.
 
-    .venv/bin/python scripts/fake_backends.py --launch     # fakes and Cleo together
-    .venv/bin/python scripts/fake_backends.py [scenario]   # fakes only, logging here
+    .venv/bin/python cleo/scripts/fake_backends.py --launch # fakes and Olympus
+    .venv/bin/python cleo/scripts/fake_backends.py [scenario] # fakes only
 
 One local port answers both Ollama's streaming `/api/chat` and Nineveh's
 read-only `/api/v1/librarian/*`. Both are needed: Cleo replaces any answer
@@ -53,6 +53,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_SCENARIO = HERE / "scenarios" / "demo.json"
+# The per-agent credential override for the Cleo that `OLYMPUS_BOOTSTRAP_CLEO`
+# seeds (olympus.secrets.environment_key for agent "dev-cleo"). The fake token
+# is handed over this way so it never reaches Keychain or any other store.
+FAKE_TOKEN_VARIABLE = "OLYMPUS_SECRET_DEV_CLEO_NINEVEH_TOKEN"
 # Beside Ollama's 11434, so a real one can keep running.
 DEFAULT_PORT = 11435
 DEFAULT_DELAY = 0.04
@@ -250,6 +254,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         url = urlsplit(self.path)
+        if url.path == "/api/tags":
+            self._json(200, {"models": [{"name": "fake"}, {"name": "fake:demo"}]})
+            return
         if not url.path.startswith(f"{LIBRARIAN}/"):
             self._json(404, {"detail": f"fake Nineveh has no {url.path}"})
             return
@@ -346,25 +353,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def launch(server: FakeBackends, scenario_path: Path, state_dir: Path | None) -> int:
-    """Serve in the background and run Cleo in the foreground against it."""
-    if importlib.util.find_spec("cleo") is None:
+    """Serve in the background and run Olympus in the foreground against it."""
+    if importlib.util.find_spec("olympus") is None:
         sys.exit(
-            "fake_backends: cleo is not importable. Run this with .venv/bin/python."
+            "fake_backends: olympus is not importable. Run this with the project venv."
         )
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    with tempfile.TemporaryDirectory(prefix="cleo-fake-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="olympus-fake-") as scratch:
         env = {
             **os.environ,
             "OLLAMA_URL": server.url,
             "NINEVEH_URL": server.url,
-            "NINEVEH_TOKEN": "nvh_fake",
-            # Shown in Cleo's identity bar, so a fake session is never mistaken
+            FAKE_TOKEN_VARIABLE: "nvh_fake",
+            # Agents added during a fake session keep their tokens in the
+            # throwaway state directory, never in the real Keychain.
+            "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
+            # Shown in Olympus's identity bar, so a fake session is never mistaken
             # for a real one.
-            "CLEO_MODEL": f"fake:{scenario_path.stem}",
-            "CLEO_STATE_DIR": str(state_dir or Path(scratch) / "state"),
+            "OLYMPUS_MODEL": f"fake:{scenario_path.stem}",
+            "OLYMPUS_STATE_DIR": str(state_dir or Path(scratch) / "state"),
+            "OLYMPUS_BOOTSTRAP_CLEO": "1",
         }
         try:
-            return subprocess.call([sys.executable, "-m", "cleo"], env=env)
+            return subprocess.call([sys.executable, "-m", "olympus"], env=env)
         finally:
             server.shutdown()
 
@@ -380,12 +391,12 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds between streamed words",
     )
     parser.add_argument(
-        "--launch", action="store_true", help="also run Cleo against the fakes"
+        "--launch", action="store_true", help="also run Olympus against the fakes"
     )
     parser.add_argument(
         "--state-dir",
         type=Path,
-        help="with --launch, keep Cleo's history here instead of a throwaway directory",
+        help="with --launch, keep Olympus history here instead of a throwaway directory",
     )
     parser.add_argument(
         "--log",
@@ -419,8 +430,9 @@ def main(argv: list[str] | None = None) -> int:
         f"Fake Ollama and Nineveh on {server.url} ({args.scenario.name})\n"
         f"Scripted keywords: {keywords}\n\n"
         "In another terminal:\n"
-        f"  OLLAMA_URL={server.url} NINEVEH_URL={server.url} NINEVEH_TOKEN=nvh_fake \\\n"
-        f"  CLEO_MODEL=fake:{args.scenario.stem} CLEO_STATE_DIR=$(mktemp -d)/state .venv/bin/cleo\n",
+        f"  OLLAMA_URL={server.url} NINEVEH_URL={server.url} {FAKE_TOKEN_VARIABLE}=nvh_fake \\\n"
+        f"  OLYMPUS_MODEL=fake:{args.scenario.stem} OLYMPUS_STATE_DIR=$(mktemp -d)/state \\\n"
+        f"  OLYMPUS_BOOTSTRAP_CLEO=1 .venv/bin/olympus\n",
         flush=True,
     )
     try:

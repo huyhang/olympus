@@ -5,7 +5,6 @@ import json
 
 import httpx
 import pytest
-
 from cleo.ollama import ModelError, OllamaChatModel
 
 
