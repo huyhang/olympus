@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable, Coroutine, Iterable
 from functools import partial
 from pathlib import Path
@@ -14,6 +15,7 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
+from textual.theme import Theme
 from textual.widgets import Button, Footer, Header, ListView, Markdown, Static
 
 from olympus.commands import HELP, Command, parse_command
@@ -48,6 +50,7 @@ from olympus.ui.screens import (
     IdentityScreen,
 )
 from olympus.ui.state import AgentChat, Reply
+from olympus.ui.theme import OLYMPUS
 from olympus.ui.transcript import (
     choice_markdown,
     draft_markdown,
@@ -107,41 +110,41 @@ class OlympusApp(App[None]):
     SUB_TITLE = "Local agents, one place"
     COMMAND_PALETTE_BINDING = "ctrl+k"
     CSS = """
-    Screen { background: #0b1017; color: #e6edf3; }
-    Header { background: #111a24; color: #dce8f5; }
-    Footer { background: #111a24; }
+    Screen { background: $background; color: $foreground; }
+    Header { background: $panel; color: $foreground; }
+    Footer { background: $panel; }
     #body { height: 1fr; }
     #sidebar {
-        width: 30; min-width: 24; height: 1fr; background: #101821;
-        border-right: solid #243447;
+        width: 30; min-width: 24; height: 1fr; background: $surface;
+        border-right: solid $border-blurred;
     }
-    #brand { height: 3; padding: 1 2; color: #8bd5ff; text-style: bold; }
+    #brand { height: 3; padding: 1 2; color: $text-primary; text-style: bold; }
     #agent-list { height: 1fr; background: transparent; padding: 0 1; }
     #agent-list ListItem { height: 3; padding: 0 1; margin-bottom: 1; }
-    #agent-list ListItem.--highlight { background: #1d3044; color: #ffffff; }
+    #agent-list ListItem.--highlight { background: $primary-muted; color: $text; }
     #sidebar-actions { height: 4; padding: 0 1; }
     #sidebar-actions Button { width: 1fr; min-width: 8; margin: 0 1 0 0; }
     #workspace { width: 1fr; height: 1fr; }
-    #identity { height: 3; padding: 1 2; background: #0f1720; color: #9fb2c5; }
-    #transcript { height: 1fr; padding: 1 3; scrollbar-color: #2f81f7; }
-    #empty-state { width: 70%; margin: 4 8; padding: 2 3; border: round #2f81f7; }
+    #identity { height: 3; padding: 1 2; background: $surface; color: $text-muted; }
+    #transcript { height: 1fr; padding: 1 3; scrollbar-color: $primary; }
+    #empty-state { width: 70%; margin: 4 8; padding: 2 3; border: round $primary; }
     .message { margin: 0 0 1 0; padding: 1 2; }
-    .user { background: #172438; border-left: thick #58a6ff; }
-    .assistant { background: #111c19; border-left: thick #3fb950; }
-    .evidence { margin: 0 2 1 4; color: #9fb2c5; }
+    .user { background: $primary-muted; border-left: thick $primary; }
+    .assistant { background: $surface; border-left: thick $success; }
+    .evidence { margin: 0 2 1 4; color: $text-muted; }
     .offer { margin: 0 2 1 4; }
-    #status { height: 1; padding: 0 3; color: #8b9bab; }
+    #status { height: 1; padding: 0 3; color: $text-muted; }
     #compose-row { height: 7; margin: 0 2 1 2; }
-    #composer { width: 1fr; height: 6; border: tall #2f81f7; background: #0e1621; }
-    #composer:focus { border: tall #79c0ff; }
+    #composer { width: 1fr; height: 6; border: tall $primary; background: $surface; }
+    #composer:focus { border: tall $primary-lighten-2; }
     #send { width: 10; height: 6; margin-left: 1; }
     .screen-panel { width: 90%; height: 88%; margin: 2 5; padding: 1 2; }
     .form-panel { width: 80%; height: 90%; margin: 1 10; padding: 1 3; }
-    .screen-title { height: 2; color: #8bd5ff; text-style: bold; }
-    .screen-subtitle { height: 2; color: #8b9bab; }
+    .screen-title { height: 2; color: $text-primary; text-style: bold; }
+    .screen-subtitle { height: 2; color: $text-muted; }
     .screen-actions { height: 4; margin-top: 1; }
     .screen-actions Button { margin-right: 1; }
-    .hint { height: auto; color: #8b9bab; }
+    .hint { height: auto; color: $text-muted; }
     #manager-actions {
         grid-size: 4; grid-gutter: 0 1; grid-rows: 3; height: 7; margin-top: 1;
     }
@@ -155,18 +158,18 @@ class OlympusApp(App[None]):
     #agent-form-status, #defaults-status { height: 2; margin-top: 1; }
     .dialog {
         width: 68; height: auto; max-height: 80%; padding: 2;
-        background: #111a24; border: round #2f81f7;
+        background: $panel; border: round $primary;
     }
-    .dialog-title { height: 2; color: #ffffff; text-style: bold; }
-    .dialog-copy { height: auto; color: #aab8c5; }
+    .dialog-title { height: 2; color: $text; text-style: bold; }
+    .dialog-copy { height: auto; color: $text-muted; }
     .dialog-buttons { height: 4; align-horizontal: right; margin-top: 1; }
     .dialog-buttons Button { margin-left: 1; }
     ConfirmScreen, RemoveAgentScreen, AgentTypeScreen {
-        align: center middle; background: #05080c 70%;
+        align: center middle; background: $background 70%;
     }
     #type-dialog { height: 20; }
     #type-list { height: 1fr; }
-    #remove-agent-dialog { border: round #d29922; }
+    #remove-agent-dialog { border: round $warning; }
     """
     BINDINGS: ClassVar = [
         Binding("ctrl+a", "agents", "Agents", priority=True),
@@ -205,6 +208,9 @@ class OlympusApp(App[None]):
         self._input_index = 0
         self._sidebar_forced = False
         self._sidebar_lock = asyncio.Lock()
+        self.register_theme(OLYMPUS)
+        saved = service.store.theme()
+        self.theme = saved if saved in self.available_themes else OLYMPUS.name
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -227,6 +233,7 @@ class OlympusApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
+        self.theme_changed_signal.subscribe(self, self._remember_theme)
         for failure in self._service.registry.failures:
             self.notify(failure, severity="error", timeout=15)
         await self._populate_agents()
@@ -899,7 +906,18 @@ class OlympusApp(App[None]):
             "Show or hide navigation",
             self.action_toggle_sidebar,
         )
+        # Textual's own: Theme, Keys, Maximize, Screenshot. Its Quit would
+        # duplicate ours, which also closes the agents.
+        for command in super().get_system_commands(screen):
+            if command.title != "Quit":
+                yield command
         yield SystemCommand("Quit Olympus", "Close agents and exit", self.exit)
+
+    def _remember_theme(self, theme: Theme) -> None:
+        try:
+            self._service.store.save_theme(theme.name)
+        except (OlympusError, sqlite3.Error) as error:
+            self.notify(f"Could not save the theme: {error}", severity="warning")
 
     def _conversation_commands(self) -> Iterable[SystemCommand]:
         if self._profile is None or self._repository is None:

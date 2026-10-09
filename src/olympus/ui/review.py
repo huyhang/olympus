@@ -17,6 +17,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import (
@@ -37,6 +38,7 @@ from olympus.presentation import plain_text
 from olympus.ui import proposals as view
 from olympus.ui.folders import TYPING_PAUSE, FolderRequest
 from olympus.ui.screens import ConfirmScreen
+from olympus.ui.theme import DEFAULT_PALETTE, Palette, palette_of
 
 # What a session's transport can raise from an action. Shown, never fatal.
 ACTION_FAILURES = (RuntimeError, OSError, ValueError, httpx.HTTPError)
@@ -51,13 +53,38 @@ DWELL = 0.5
 Search = Callable[[str], Awaitable[tuple[Candidate, ...]]]
 
 
+class FileList(ListView):
+    """The board's file list. A click only highlights a file; Enter acts on it.
+
+    A plain ListView treats a click like Enter, which here would place a
+    volume, and placing cannot be undone from the board.
+    """
+
+    BINDINGS: ClassVar = [Binding("enter", "activate", "Place", show=False)]
+
+    class Activated(Message):
+        """Enter was pressed on the highlighted file."""
+
+        def __init__(self, files: FileList) -> None:
+            super().__init__()
+            self.files = files
+
+        @property
+        def control(self) -> FileList:
+            return self.files
+
+    def action_activate(self) -> None:
+        if self.highlighted_child is not None:
+            self.post_message(self.Activated(self))
+
+
 class ProposalRow(ListItem):
-    def __init__(self, proposal: Proposal) -> None:
-        super().__init__(Static(view.row_text(proposal)))
+    def __init__(self, proposal: Proposal, palette: Palette) -> None:
+        super().__init__(Static(view.row_text(proposal, palette)))
         self.proposal_id = proposal.id
 
-    def show(self, proposal: Proposal) -> None:
-        self.query_one(Static).update(view.row_text(proposal))
+    def show(self, proposal: Proposal, palette: Palette) -> None:
+        self.query_one(Static).update(view.row_text(proposal, palette))
 
 
 def divider(label: str) -> ListItem:
@@ -70,22 +97,22 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
 
     DEFAULT_CSS = """
     #board { width: 1fr; height: 1fr; padding: 1 2; }
-    #board-heading { height: 1; color: #8bd5ff; text-style: bold; }
-    #board-folder { height: 1; color: #8b9bab; }
+    #board-heading { height: 1; color: $text-primary; text-style: bold; }
+    #board-folder { height: 1; color: $text-muted; }
     #board-tally { height: 1; margin-top: 1; }
     #board-progress { height: 1; margin-bottom: 1; }
     #board-progress Bar { width: 1fr; }
     #board-body { height: 1fr; }
     #board-files {
-        width: 2fr; min-width: 30; height: 1fr; background: #101821;
-        border: round #243447;
+        width: 2fr; min-width: 30; height: 1fr; background: $surface;
+        border: round $border-blurred;
     }
     #board-files ListItem { height: 1; padding: 0 1; }
-    #board-files ListItem.--highlight { background: #1d3044; }
-    #board-files ListItem.divider { margin-top: 1; color: #56d4dd; }
+    #board-files ListItem.--highlight { background: $primary-muted; }
+    #board-files ListItem.divider { margin-top: 1; color: $text-secondary; }
     #board-detail {
         width: 3fr; height: 1fr; margin-left: 1; padding: 1 2;
-        background: #0f1720; border: round #2f81f7;
+        background: $surface; border: round $primary;
     }
     #board-card { height: 1fr; }
     #board-actions { height: 3; }
@@ -117,6 +144,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         self._dwell_timer: Timer | None = None
         # The row the board highlighted by itself, before the user moved.
         self._resting_on: str | None = None
+        self._palette = DEFAULT_PALETTE
         self._session: ReviewSession | None = None
 
     def compose(self) -> ComposeResult:
@@ -135,7 +163,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
                 show_eta=False, show_percentage=False, id="board-progress"
             )
             with Horizontal(id="board-body"):
-                yield ListView(id="board-files")
+                yield FileList(id="board-files")
                 with Vertical(id="board-detail"):
                     yield Static(view.detail_renderable(None), id="board-card")
                     with Horizontal(id="board-actions"):
@@ -148,6 +176,8 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
 
     def on_mount(self) -> None:
         request = self._request
+        self._palette = palette_of(self.app)
+        self.app.theme_changed_signal.subscribe(self, self._retheme)
         self._session = self._workflow.open(
             request.folder, request.recursive, self.show_proposal
         )
@@ -168,7 +198,9 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         self._proposals[proposal.id] = proposal
         row = self._proposal_rows.get(proposal.id)
         if row is None:
-            row = self._proposal_rows[proposal.id] = ProposalRow(proposal)
+            row = self._proposal_rows[proposal.id] = ProposalRow(
+                proposal, self._palette
+            )
             files = self.query_one("#board-files", ListView)
             if proposal.carried_over and not self._divided:
                 self._divided = True
@@ -178,7 +210,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
                 files.index = 0
                 self._resting_on = proposal.id
         else:
-            row.show(proposal)
+            row.show(proposal, self._palette)
         self._refresh()
         self._watch_dwell()
 
@@ -195,6 +227,13 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         self._prepared = True
         self._refresh()
 
+    def _retheme(self, _theme: object) -> None:
+        """Rich text holds concrete colours, so draw it again in the new ones."""
+        self._palette = palette_of(self.app)
+        for proposal_id, row in self._proposal_rows.items():
+            row.show(self._proposals[proposal_id], self._palette)
+        self._refresh()
+
     def _refresh(self) -> None:
         if not self.is_mounted:
             return
@@ -208,18 +247,20 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
 
     def _tally(self, proposals: list[Proposal]) -> Text:
         if proposals:
-            return view.tally_text(proposals)
+            return view.tally_text(proposals, self._palette)
         if self._prepared:
-            return Text("Nothing to file in this folder.", style="#d29922")
-        return Text("Looking through the folder…", style="#8b9bab")
+            return Text("Nothing to file in this folder.", style=self._palette.warning)
+        return Text("Looking through the folder…", style=self._palette.muted)
 
     def _show_detail(self) -> None:
         current = self._highlighted()
         card = self.query_one("#board-card", Static)
         if current is None and self._prepared and not self._proposals:
-            card.update(Text("Nothing here. Press Esc to go back.", style="#8b9bab"))
+            card.update(
+                Text("Nothing here. Press Esc to go back.", style=self._palette.muted)
+            )
         else:
-            card.update(view.detail_renderable(current))
+            card.update(view.detail_renderable(current, self._palette))
         for action in ("place", "skip", "choose", "rename", "withdraw"):
             button = self.query_one(f"#board-{action}", Button)
             button.disabled = not view.allowed(current, action)
@@ -263,8 +304,8 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         if current is not None and current.id == target and current.state == "planned":
             self._act(self._require_session().prepare, current.id)
 
-    @on(ListView.Selected, "#board-files")
-    def selected(self) -> None:
+    @on(FileList.Activated, "#board-files")
+    def activated(self) -> None:
         """Enter does the one useful thing: place, or else choose a series."""
         if view.allowed(self._highlighted(), "place"):
             self.action_place()
@@ -393,12 +434,12 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
 
 class SeriesPickerScreen(ModalScreen[Candidate | None]):
     DEFAULT_CSS = """
-    SeriesPickerScreen { align: center middle; background: #05080c 70%; }
+    SeriesPickerScreen { align: center middle; background: $background 70%; }
     #series-dialog { width: 76; height: 26; }
     #series-list {
-        height: 1fr; margin-top: 1; background: #0e1621; border: round #243447;
+        height: 1fr; margin-top: 1; background: $surface; border: round $border-blurred;
     }
-    #series-status { height: 1; color: #8b9bab; }
+    #series-status { height: 1; color: $text-muted; }
     """
     BINDINGS: ClassVar = [
         Binding("escape", "cancel", "Cancel"),
@@ -472,7 +513,7 @@ class SeriesPickerScreen(ModalScreen[Candidate | None]):
         try:
             found = await self._search(query)
         except (ReviewError, *ACTION_FAILURES) as error:
-            status.update(Text(_failure(error), style="#f85149"))
+            status.update(Text(_failure(error), style=palette_of(self.app).error))
             return
         await self._show(found)
         status.update(f"{len(found)} match{'' if len(found) == 1 else 'es'}")
@@ -494,7 +535,7 @@ class SeriesPickerScreen(ModalScreen[Candidate | None]):
 
 class RenameScreen(ModalScreen[str | None]):
     DEFAULT_CSS = """
-    RenameScreen { align: center middle; background: #05080c 70%; }
+    RenameScreen { align: center middle; background: $background 70%; }
     """
     BINDINGS: ClassVar = [Binding("escape", "cancel", "Cancel")]
 

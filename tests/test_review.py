@@ -470,6 +470,26 @@ def test_a_review_waits_for_the_reply_on_screen(tmp_path):
     asyncio.run(exercise())
 
 
+def test_clicking_a_file_only_highlights_it(tmp_path):
+    app, _, provider, _ = with_workflow(tmp_path)
+
+    async def exercise():
+        async with app.run_test(size=SIZE) as pilot:
+            board = await open_board(app, pilot, tmp_path / "inbox")
+            session = provider.workflow.sessions[0][2]
+            rows = list(board.query_one("#board-files", ListView).children)
+            for index in (2, 0):  # a file needing a series, then a ready one
+                await pilot.click(rows[index])
+                await settle(pilot)
+                assert board._highlighted().id == rows[index].proposal_id
+                assert app.screen is board
+            assert session.actions == []
+            await pilot.press("enter")
+            await until(pilot, lambda: session.actions == [("place", "a.cbz")])
+
+    asyncio.run(exercise())
+
+
 def test_enter_chooses_a_series_when_there_is_nothing_to_place(tmp_path):
     app, _, _, _ = with_workflow(tmp_path)
 

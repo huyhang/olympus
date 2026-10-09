@@ -2,6 +2,8 @@
 
 Pure functions over `Proposal` snapshots, so the review board stays a thin
 view. Every proposal field is agent text and passes through `plain_text`.
+Styles name palette roles ("success", "muted"), never colours: renderers take
+the `Palette` of the active theme.
 """
 
 from __future__ import annotations
@@ -16,20 +18,21 @@ from rich.text import Text
 
 from olympus.domain import Evidence, Proposal
 from olympus.presentation import human_size, plain_text
+from olympus.ui.theme import DEFAULT_PALETTE, Palette
 
 GLYPHS: dict[str, tuple[str, str]] = {
-    "pending": ("◌", "#8b9bab"),
-    "working": ("◐", "#79c0ff"),
-    "planned": ("○", "#79c0ff"),
-    "needs_choice": ("?", "#d2a8ff"),
-    "ready": ("●", "#3fb950"),
-    "placing": ("◐", "#3fb950"),
-    "placed": ("✓", "#3fb950"),
-    "held": ("⏸", "#d29922"),
-    "skipped": ("–", "#6e7681"),
-    "failed": ("✗", "#f85149"),
+    "pending": ("◌", "muted"),
+    "working": ("◐", "info"),
+    "planned": ("○", "info"),
+    "needs_choice": ("?", "choice"),
+    "ready": ("●", "success"),
+    "placing": ("◐", "success"),
+    "placed": ("✓", "success"),
+    "held": ("⏸", "warning"),
+    "skipped": ("–", "faint"),
+    "failed": ("✗", "error"),
 }
-WARNING_GLYPH = ("⚠", "#d29922")
+WARNING_GLYPH = ("⚠", "warning")
 # Each state's tally label, in display order. Ready proposals with a warning,
 # and those carried over from before the review, are counted apart.
 TALLY_LABELS: tuple[tuple[str, str], ...] = (
@@ -45,7 +48,7 @@ TALLY_LABELS: tuple[tuple[str, str], ...] = (
     ("skipped", "skipped"),
 )
 IN_PROGRESS = frozenset({"pending", "working", "placing"})
-CARRIED_GLYPH = ("◆", "#56d4dd")
+CARRIED_GLYPH = ("◆", "carried")
 ACTIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"skip"}),
     "planned": frozenset({"place", "skip", "choose"}),
@@ -89,13 +92,15 @@ def tally(proposals: Iterable[Proposal]) -> list[tuple[str, int]]:
     return [(label, counts[key]) for key, label in TALLY_LABELS if counts.get(key)]
 
 
-def tally_text(proposals: Sequence[Proposal]) -> Text:
+def tally_text(
+    proposals: Sequence[Proposal], palette: Palette = DEFAULT_PALETTE
+) -> Text:
     total = len(proposals)
     text = Text(f"{total} file{'' if total == 1 else 's'}", style="bold")
     styles = {label: _tally_style(key) for key, label in TALLY_LABELS}
     for label, count in tally(proposals):
         text.append("   ")
-        text.append(f"{count} {label}", style=styles[label])
+        text.append(f"{count} {label}", style=palette.style(styles[label]))
     return text
 
 
@@ -107,15 +112,15 @@ def _tally_style(key: str) -> str:
     return GLYPHS["working" if key == "working" else key][1]
 
 
-def row_text(proposal: Proposal) -> Text:
+def row_text(proposal: Proposal, palette: Palette = DEFAULT_PALETTE) -> Text:
     """One file-list line: glyph, file, and what is happening to it."""
     mark, style = glyph(proposal)
     text = Text(no_wrap=True, overflow="ellipsis")
-    text.append(f"{mark} ", style=f"bold {style}")
+    text.append(f"{mark} ", style=palette.style(f"bold {style}"))
     text.append(plain_text(proposal.source))
     note = row_note(proposal)
     if note:
-        text.append(f"  {note}", style="#8b9bab")
+        text.append(f"  {note}", style=palette.muted)
     return text
 
 
@@ -170,12 +175,12 @@ def detail_rows(proposal: Proposal) -> list[DetailRow]:
     """The labelled lines of the detail pane, top to bottom."""
     rows = _subject_rows(proposal)
     if proposal.state == "placed":
-        rows.append(DetailRow("Placed at", _landing(proposal), "bold #3fb950"))
+        rows.append(DetailRow("Placed at", _landing(proposal), "bold success"))
     elif proposal.destination:
         rows.append(DetailRow("Lands in", _folder(proposal.destination)))
         rows += _filename_rows(proposal)
     if proposal.warning:
-        rows.append(DetailRow("Check", plain_text(proposal.warning), "#d29922"))
+        rows.append(DetailRow("Check", plain_text(proposal.warning), "warning"))
     rows += _activity_rows(proposal)
     return rows
 
@@ -187,11 +192,11 @@ def _subject_rows(proposal: Proposal) -> list[DetailRow]:
         if proposal.suggestion is not None:
             title = plain_text(proposal.suggestion.title)
             text = f"Not sure — suggested: {title}. Press c to confirm"
-            return [DetailRow("Series", text, "#d2a8ff")]
-        return [DetailRow("Series", "Not sure yet — press c to choose", "#d2a8ff")]
+            return [DetailRow("Series", text, "choice")]
+        return [DetailRow("Series", "Not sure yet — press c to choose", "choice")]
     rows = [DetailRow("Series", plain_text(proposal.subject.title), "bold")]
     if proposal.subject_note:
-        rows.append(DetailRow("", plain_text(proposal.subject_note), "#8b9bab"))
+        rows.append(DetailRow("", plain_text(proposal.subject_note), "muted"))
     return rows
 
 
@@ -202,9 +207,9 @@ def _filename_rows(proposal: Proposal) -> list[DetailRow]:
     if not proposal.renamed:
         return [DetailRow("Filename", name)]
     original = plain_text(proposal.source.rsplit("/", 1)[-1])
-    rows = [DetailRow("Renamed", original, "#8b9bab"), DetailRow("", f"→ {name}")]
+    rows = [DetailRow("Renamed", original, "muted"), DetailRow("", f"→ {name}")]
     if proposal.pattern:
-        rows.append(DetailRow("Follows", plain_text(proposal.pattern), "#8b9bab"))
+        rows.append(DetailRow("Follows", plain_text(proposal.pattern), "muted"))
     return rows
 
 
@@ -213,12 +218,12 @@ def _activity_rows(proposal: Proposal) -> list[DetailRow]:
     if proposal.state == "needs_choice":
         found = ", ".join(plain_text(item.title) for item in proposal.alternatives[:3])
         rows = [DetailRow("Matches", found)] if found else []
-        return rows + ([DetailRow("Why", activity, "#8b9bab")] if activity else [])
+        return rows + ([DetailRow("Why", activity, "muted")] if activity else [])
     if not activity:
         return []
-    style = {"failed": "#f85149", "held": "#d29922"}.get(proposal.state, "#79c0ff")
+    style = {"failed": "error", "held": "warning"}.get(proposal.state, "info")
     if proposal.state == "ready":
-        style = "#f85149"
+        style = "error"
     return [DetailRow("Status", activity, style)]
 
 
@@ -231,16 +236,19 @@ def _landing(proposal: Proposal) -> str:
     return f"{_folder(proposal.destination)}{plain_text(proposal.filename)}"
 
 
-def detail_renderable(proposal: Proposal | None) -> Group | Text:
+def detail_renderable(
+    proposal: Proposal | None, palette: Palette = DEFAULT_PALETTE
+) -> Group | Text:
     if proposal is None:
-        return Text("Looking through the folder…", style="#8b9bab")
-    heading = Text(plain_text(proposal.source), style="bold #ffffff")
+        return Text("Looking through the folder…", style=palette.muted)
+    heading = Text(plain_text(proposal.source), style=palette.style("bold text"))
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="#8b9bab", no_wrap=True)
+    grid.add_column(style=palette.muted, no_wrap=True)
     grid.add_column(overflow="fold")
     for row in detail_rows(proposal):
-        grid.add_row(row.label, Text(row.value, style=row.style))
-    return Group(heading, Text(facts(proposal), style="#8b9bab"), Text(""), grid)
+        grid.add_row(row.label, Text(row.value, style=palette.style(row.style)))
+    facts_line = Text(facts(proposal), style=palette.muted)
+    return Group(heading, facts_line, Text(""), grid)
 
 
 def summary_markdown(title: str, folder: Path, proposals: Sequence[Proposal]) -> str:

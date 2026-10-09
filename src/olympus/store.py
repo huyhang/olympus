@@ -309,6 +309,20 @@ class OlympusStore:
             )
         return OllamaDefaults(clean_url, clean_model)
 
+    def theme(self) -> str | None:
+        """The colour theme last chosen in the command palette, if any."""
+        row = self._connection.execute(
+            "SELECT value FROM settings WHERE key = 'theme'"
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_theme(self, name: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('theme', ?)",
+                (name,),
+            )
+
     def close(self) -> None:
         self._connection.close()
 

@@ -26,6 +26,7 @@ from textual.widgets import Button, DirectoryTree, Input, Label, Static, Switch
 
 from olympus.ports import FolderWorkflow
 from olympus.presentation import plain_text
+from olympus.ui.theme import palette_of
 
 # How long typing must pause before a lookup starts.
 TYPING_PAUSE = 0.25
@@ -103,14 +104,14 @@ def _is_dir(path: Path) -> bool:
 
 class FolderPickerScreen(ModalScreen[FolderRequest | None]):
     DEFAULT_CSS = """
-    FolderPickerScreen { align: center middle; background: #05080c 70%; }
+    FolderPickerScreen { align: center middle; background: $background 70%; }
     #folder-dialog { width: 84; height: 34; }
     #folder-tree {
-        height: 1fr; margin: 1 0; background: #0e1621; border: round #243447;
+        height: 1fr; margin: 1 0; background: $surface; border: round $border-blurred;
     }
     #folder-options { height: 3; }
-    #folder-options Label { padding: 1 1; color: #aab8c5; }
-    #folder-preview { height: 1; color: #8bd5ff; }
+    #folder-options Label { padding: 1 1; color: $text-muted; }
+    #folder-preview { height: 1; color: $text-primary; }
     """
     BINDINGS: ClassVar = [Binding("escape", "cancel", "Cancel")]
 
@@ -166,7 +167,9 @@ class FolderPickerScreen(ModalScreen[FolderRequest | None]):
     def start(self) -> None:
         folder = resolve_folder(self.query_one("#folder-path", Input).value)
         if folder is None:
-            self._preview(Text("Choose an existing folder.", style="#f85149"))
+            self._preview(
+                Text("Choose an existing folder.", style=palette_of(self.app).error)
+            )
             return
         self.dismiss(FolderRequest(folder, self._recursive))
 
@@ -189,12 +192,12 @@ class FolderPickerScreen(ModalScreen[FolderRequest | None]):
         )
 
     async def _describe(self, folder: Path, recursive: bool) -> None:
-        self._preview(Text("Looking…", style="#8b9bab"))
+        self._preview(Text("Looking…", style=palette_of(self.app).muted))
         try:
             line = await asyncio.to_thread(self._workflow.describe, folder, recursive)
         except OSError as error:
             line = f"Cannot read that folder: {error.strerror or error}"
-        self._preview(Text(plain_text(line), style="#8bd5ff"))
+        self._preview(Text(plain_text(line), style=palette_of(self.app).info))
 
     def _preview(self, text: Text) -> None:
         self.query_one("#folder-preview", Static).update(text)

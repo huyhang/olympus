@@ -61,7 +61,7 @@ streaming in the background: switch back to watch it finish, or wait for the
 |---|---|
 | `Enter` / `Shift+Enter` or `Ctrl+J` | send / new line |
 | `Esc` | cancel the reply on screen |
-| `Ctrl+K` | command palette: switch agent, open a recent chat, and more |
+| `Ctrl+K` | command palette: switch agent, open a recent chat, change the colour theme (remembered), and more |
 | `Ctrl+G`, then `↑` `↓` `Enter` | switch agent from the keyboard |
 | `Ctrl+A` | manage agents: add, edit, remove, restore, defaults |
 | `Ctrl+N` / `Ctrl+R` | new conversation / conversation history |
@@ -90,7 +90,8 @@ completion and a folder tree), and the agent turns each file into a proposal
 while you watch.
 
 The board lists every file with its state, shows the highlighted one in
-detail, and keeps a running tally. Nothing happens to a file until you decide:
+detail, and keeps a running tally. Clicking a file, like the arrow keys, only
+highlights it; nothing happens to a file until you decide:
 
 | Key | Action |
 |---|---|
