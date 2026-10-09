@@ -22,11 +22,19 @@ from textual.widgets import (
     ListView,
     Select,
     Static,
+    Switch,
     TextArea,
 )
 
 from olympus.config import Settings
-from olympus.domain import AgentProfile, Conversation, OllamaDefaults
+from olympus.domain import (
+    TOGGLE_OFF,
+    TOGGLE_ON,
+    AgentProfile,
+    ConfigurationField,
+    Conversation,
+    OllamaDefaults,
+)
 from olympus.ports import ConversationRepository, OlympusError, StoreError
 from olympus.presentation import format_timestamp
 from olympus.services import AgentService, fresh_profile
@@ -310,26 +318,39 @@ class AgentFormScreen(Screen[AgentProfile | None]):
                 id="agent-style",
             )
             for field in definition.fields:
-                suffix = (
-                    " (leave blank to keep current)"
-                    if field.secret and self._exists
-                    else ""
-                )
-                yield Label(f"{field.label}{suffix}")
-                yield Input(
-                    value=""
-                    if field.secret
-                    else self._profile.settings.get(field.key, ""),
-                    placeholder=field.placeholder,
-                    password=field.secret,
-                    id=f"config-{field.key}",
-                )
+                yield from self._field(field)
             yield Static("", id="agent-form-status")
             with Horizontal(classes="screen-actions"):
                 yield Button("Cancel", id="agent-cancel")
                 yield Button("Test connection", id="agent-test")
                 yield Button("Save agent", id="agent-save", variant="primary")
         yield Footer()
+
+    def _field(self, field: ConfigurationField) -> ComposeResult:
+        if field.kind == "toggle":
+            value = self._profile.settings.get(field.key, field.default)
+            with Horizontal(classes="toggle-row"):
+                yield Switch(value == TOGGLE_ON, id=f"config-{field.key}")
+                yield Label(field.label, markup=False)
+            if field.placeholder:
+                yield Static(field.placeholder, classes="hint", markup=False)
+            return
+        suffix = (
+            " (leave blank to keep current)" if field.secret and self._exists else ""
+        )
+        yield Label(f"{field.label}{suffix}")
+        yield Input(
+            value="" if field.secret else self._profile.settings.get(field.key, ""),
+            placeholder=field.placeholder,
+            password=field.secret,
+            id=f"config-{field.key}",
+        )
+
+    def _field_value(self, field: ConfigurationField) -> str:
+        if field.kind == "toggle":
+            on = self.query_one(f"#config-{field.key}", Switch).value
+            return TOGGLE_ON if on else TOGGLE_OFF
+        return self.query_one(f"#config-{field.key}", Input).value.strip()
 
     def _subtitle(self, description: str) -> str:
         return f"{description} · ID {self._profile.id}" if self._exists else description
@@ -342,7 +363,7 @@ class AgentFormScreen(Screen[AgentProfile | None]):
         settings = dict(self._profile.settings)
         secrets: dict[str, str] = {}
         for field in self._provider.definition.fields:
-            value = self.query_one(f"#config-{field.key}", Input).value.strip()
+            value = self._field_value(field)
             if field.secret:
                 secrets[field.key] = value
             else:

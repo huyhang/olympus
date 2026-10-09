@@ -8,11 +8,17 @@ import httpx
 
 from cleo.agent import Librarian
 from cleo.config import CleoSettings
+from cleo.filing import FilingServices, FilingWorkflow
+from cleo.inbox import FolderInbox
+from cleo.ingest import NinevehIngestClient
+from cleo.matcher import ModelTitleGuesser, SeriesMatcher
 from cleo.nineveh import NinevehCatalogClient
 from cleo.ollama import OllamaChatModel
-from cleo.ports import CatalogError
+from cleo.ports import CatalogError, IngestError
 from cleo.tools import ReadOnlyToolRegistry
 from olympus.domain import (
+    TOGGLE_OFF,
+    TOGGLE_ON,
     AgentDefinition,
     AgentProfile,
     AgentRuntime,
@@ -29,7 +35,7 @@ class CleoProvider:
         return AgentDefinition(
             kind="cleo",
             name="Cleo",
-            description="Read-only librarian for a Nineveh catalog",
+            description="Librarian for a Nineveh catalog",
             glyph="C",
             fields=(
                 ConfigurationField(
@@ -43,6 +49,17 @@ class CleoProvider:
                     "Nineveh token",
                     placeholder="nvh_…",
                     secret=True,
+                ),
+                ConfigurationField(
+                    "filing",
+                    "Allow filing volumes from a folder",
+                    placeholder=(
+                        "You approve every volume. Needs a token with ingest:stage, "
+                        "and ingest:commit to place volumes from here."
+                    ),
+                    default=TOGGLE_OFF,
+                    required=False,
+                    kind="toggle",
                 ),
             ),
         )
@@ -74,6 +91,8 @@ class CleoProvider:
             raise ProviderError(str(error)) from error
         finally:
             await catalog.aclose()
+        if filing_enabled(profile):
+            await self._probe_filing(settings)
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{settings.ollama_url}/api/tags")
@@ -91,6 +110,21 @@ class CleoProvider:
         except (httpx.HTTPError, ValueError, AttributeError) as error:
             raise ProviderError("Ollama is unavailable at that URL.") from error
 
+    @staticmethod
+    async def _probe_filing(settings: CleoSettings) -> None:
+        ingest = NinevehIngestClient(settings)
+        try:
+            await ingest.pending()
+        except IngestError as error:
+            if error.status == 403:
+                raise ProviderError(
+                    "Filing is on, but this token cannot upload volumes "
+                    "(it needs ingest:stage)."
+                ) from error
+            raise ProviderError(f"Filing is on, but {error}") from error
+        finally:
+            await ingest.aclose()
+
     def open(
         self,
         profile: AgentProfile,
@@ -104,12 +138,40 @@ class CleoProvider:
         settings = self._settings(profile, supplied, defaults)
         catalog = NinevehCatalogClient(settings)
         model = OllamaChatModel(settings.ollama_url, settings.model)
-        session = Librarian(model, ReadOnlyToolRegistry(catalog))
-        return AgentRuntime(
+        filing = filing_enabled(profile)
+        session = Librarian(model, ReadOnlyToolRegistry(catalog, filing=filing))
+        runtime = AgentRuntime(
             session=session,
             model=settings.model,
             summary=self.definition.description,
             close_async=(model.aclose, catalog.aclose),
+        )
+        return (
+            self._with_filing(runtime, settings, catalog, model) if filing else runtime
+        )
+
+    @staticmethod
+    def _with_filing(
+        runtime: AgentRuntime,
+        settings: CleoSettings,
+        catalog: NinevehCatalogClient,
+        model: OllamaChatModel,
+    ) -> AgentRuntime:
+        """The same runtime, plus the filing board and the ingest client it uses.
+
+        The workflow closes first, while the clients it withdraws uploads
+        through are still open.
+        """
+        ingest = NinevehIngestClient(settings)
+        inbox = FolderInbox()
+        finder = SeriesMatcher(catalog, inbox, ModelTitleGuesser(model))
+        workflow = FilingWorkflow(FilingServices(inbox, finder, ingest))
+        return AgentRuntime(
+            session=runtime.session,
+            model=runtime.model,
+            summary=f"{runtime.summary} · filing on",
+            close_async=(workflow.aclose, *runtime.close_async, ingest.aclose),
+            workflow=workflow,
         )
 
     @staticmethod
@@ -124,3 +186,7 @@ class CleoProvider:
             ollama_url=(profile.ollama_url or defaults.url).rstrip("/"),
             model=profile.model or defaults.model,
         )
+
+
+def filing_enabled(profile: AgentProfile) -> bool:
+    return profile.settings.get("filing") == TOGGLE_ON

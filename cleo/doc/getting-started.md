@@ -1,6 +1,6 @@
 # Getting started with Cleo
 
-Cleo is a local, read-only librarian for a Nineveh catalog. It uses an Ollama
+Cleo is a local librarian for a Nineveh catalog. It uses an Ollama
 model (`granite4.2:8b` by default) to understand questions and Nineveh's API
 as the only source of catalog facts. It runs inside Olympus, the terminal
 interface at the repository root, which owns its settings, credentials, and
@@ -12,7 +12,7 @@ You need:
 
 - macOS with Python 3.12 or newer, and [pipx](https://pipx.pypa.io/stable/installation/)
 - A running Nineveh server
-- A Nineveh librarian token with only `catalog:read` and `metadata:read`
+- A Nineveh librarian token with `catalog:read` and `metadata:read`
 - A running Ollama service with `granite4.2:8b` installed
 
 Check Python and Ollama:
@@ -28,8 +28,8 @@ If `granite4.2:8b` is not listed, install it:
 ollama pull granite4.2:8b
 ```
 
-Do not grant the Cleo token `ingest:stage` or `ingest:commit`. Cleo does not
-need either permission.
+Grant `ingest:stage` or `ingest:commit` only if this Cleo should file volumes
+(step 7). Answering questions needs neither.
 
 ## 2. Install Olympus
 
@@ -138,12 +138,33 @@ The interface also supports these local commands:
 /style compact|detailed    choose the default answer depth
 /export [ID]               export a Markdown transcript
 /clear [ID|all]            clear history after confirmation
+/file [FOLDER]             file volumes from a folder (filing on)
 /help                      display command help
 ```
 
 Local commands are handled by Olympus and are never sent to the language
 model. Clearing history requires confirmation and can delete only that
 agent's records in Olympus's own database.
+
+## 7. File new volumes (optional)
+
+To let Cleo file downloaded volumes into the library:
+
+1. In Nineveh, issue a token that also carries `ingest:stage`, plus
+   `ingest:commit` if volumes should be placed from this machine.
+2. In Olympus, edit the Cleo (`Ctrl+A`, then `e`), turn on **Allow filing
+   volumes from a folder**, enter the new token, and choose **Test
+   connection**.
+3. Press `Ctrl+O`, or type `/file ~/Downloads`, pick the folder, and start the
+   review.
+
+Cleo matches each `.cbz` to a series, uploads it to Nineveh's holding area,
+and shows where it would land under which name. Press `Enter` to place a
+volume, `r` to rename it first, `c` to pick another series, `s` to skip it,
+or `A` to place everything that is ready without a warning. Leaving the
+board, or quitting Olympus, withdraws the uploads you did not decide on,
+including any still in progress, and leaving files a summary in the
+conversation.
 
 ## Data and upgrades
 
@@ -219,10 +240,20 @@ Access.
 Many terminals send Ctrl+H as Backspace, so Olympus uses Ctrl+R for history.
 Ctrl+H still works in terminals that send it as its own key.
 
+### Filing says the token cannot upload volumes
+
+The token lacks `ingest:stage`. Issue one that has it, or turn filing off.
+
+### A volume says it is awaiting approval
+
+The token may stage but not place volumes (`ingest:commit`). The upload waits
+in Nineveh's queue under **Admin → Librarian** for a token that may place it.
+
 ### Cleo declines a request
 
-Cleo supports catalog reads only. It will not browse the web, inspect local
-files, run commands, or call Nineveh's ingest operations. When Nineveh cannot
+In chat, Cleo supports catalog reads only. It will not browse the web, inspect
+local files, run commands, or call Nineveh's ingest operations; filing happens
+only on the review board you open, and only for what you approve. When Nineveh cannot
 verify a catalog fact, Cleo reports that limitation instead of answering from
 the model's general knowledge.
 

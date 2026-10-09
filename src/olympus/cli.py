@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Sequence
+from pathlib import Path
 
 from cleo.provider import CleoProvider
 
 from olympus import __version__
 from olympus.app import OlympusApp
 from olympus.config import Settings
-from olympus.domain import AgentProfile
+from olympus.domain import TOGGLE_ON, AgentProfile
 from olympus.ports import OlympusError
 from olympus.registry import AgentRegistry
 from olympus.secrets import build_secret_store
@@ -33,7 +34,13 @@ def build_app(settings: Settings | None = None) -> OlympusApp:
     except BaseException:
         store.close()
         raise
-    return OlympusApp(service, configured)
+    return OlympusApp(service, configured, start_folder())
+
+
+def start_folder() -> Path:
+    """Where the folder picker opens: Downloads, where new volumes land."""
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else Path.home()
 
 
 def _bootstrap_fake_agent(service: AgentService) -> None:
@@ -51,7 +58,9 @@ def _bootstrap_fake_agent(service: AgentService) -> None:
             kind=profile.kind,
             name=profile.name,
             settings={
-                "nineveh_url": os.environ.get("NINEVEH_URL", "http://localhost:8080")
+                "nineveh_url": os.environ.get("NINEVEH_URL", "http://localhost:8080"),
+                # The fake Nineveh accepts uploads, so the harness can file.
+                "filing": TOGGLE_ON,
             },
         ),
         {},

@@ -6,10 +6,16 @@ import asyncio
 import sqlite3
 
 from shell_fakes import configured, finish_replies, notifications, type_and_send
-from textual.widgets import Button, Input, Label, ListView, Static
+from textual.widgets import Button, Input, Label, ListView, Static, Switch
 
 from olympus.config import Settings
-from olympus.domain import AgentProfile
+from olympus.domain import (
+    TOGGLE_OFF,
+    TOGGLE_ON,
+    AgentDefinition,
+    AgentProfile,
+    ConfigurationField,
+)
 from olympus.ports import StoreError
 from olympus.ui.screens import (
     AgentFormScreen,
@@ -296,5 +302,44 @@ def test_editing_updates_the_running_agent(tmp_path):
             await pilot.pause()
             assert provider.opened[-1] == (profiles[0].id, "special-model")
             assert (profiles[0].id, "model-1") in provider.closed
+
+    asyncio.run(exercise())
+
+
+def test_a_toggle_setting_is_a_switch_that_saves_on_or_off(tmp_path):
+    app, service, provider, profiles = configured(tmp_path)
+    provider.definition = AgentDefinition(
+        "fake",
+        "Oracle",
+        "A deterministic test agent",
+        "O",
+        (
+            ConfigurationField("token", "Token", secret=True),
+            ConfigurationField(
+                "filing",
+                "Allow filing",
+                placeholder="Needs more permissions.",
+                default=TOGGLE_OFF,
+                required=False,
+                kind="toggle",
+            ),
+        ),
+    )
+
+    async def exercise():
+        async with app.run_test(size=(110, 50)) as pilot:
+            form = AgentFormScreen(service, app._defaults, profiles[0])
+            app.push_screen(form)
+            await pilot.pause()
+            switch = form.query_one("#config-filing", Switch)
+            assert switch.value is False
+            assert "Needs more permissions." in [
+                str(item.render()) for item in form.query(".hint")
+            ]
+            switch.value = True
+            form.save_pressed()
+            await pilot.pause()
+            saved = service.store.agent(profiles[0].id)
+            assert saved.settings["filing"] == TOGGLE_ON
 
     asyncio.run(exercise())

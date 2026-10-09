@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from olympus.ports import FolderWorkflow
 
 Role = Literal["user", "assistant"]
 ResponseStyle = Literal["compact", "detailed"]
@@ -51,11 +54,77 @@ class Candidate:
 
 
 @dataclass(frozen=True, slots=True)
+class SuggestedAction:
+    """Something an agent offers the user, which only the user can start.
+
+    `review_folder` opens the folder picker with `argument` filled in.
+    """
+
+    kind: Literal["review_folder"]
+    label: str
+    argument: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class AgentEvent:
-    kind: Literal["status", "token", "evidence", "choice", "done"]
+    kind: Literal["status", "token", "evidence", "choice", "action", "done"]
     text: str = ""
     evidence: Evidence | None = None
     candidates: tuple[Candidate, ...] = ()
+    action: SuggestedAction | None = None
+
+
+# Where one proposal stands. `ready` waits for the user; `held` was prepared
+# but must be approved elsewhere; `placed`, `held`, `skipped`, and `failed`
+# are settled.
+ProposalState = Literal[
+    "pending",
+    "working",
+    "needs_choice",
+    "ready",
+    "placing",
+    "placed",
+    "held",
+    "skipped",
+    "failed",
+]
+SETTLED_STATES: frozenset[str] = frozenset({"placed", "held", "skipped", "failed"})
+
+
+@dataclass(frozen=True, slots=True)
+class Proposal:
+    """An agent's suggestion for one file, as the review board shows it.
+
+    Every text field comes from the agent or the service behind it, never
+    from Olympus, so views pass it through `plain_text` before display.
+    `retryable` is False for a file the agent will never act on, such as one
+    too large to upload: choosing another target cannot help it.
+    """
+
+    id: str
+    source: str
+    state: ProposalState = "pending"
+    size: int = 0
+    pages: int = 0
+    activity: str = ""
+    subject: Candidate | None = None
+    subject_note: str = ""
+    destination: str = ""
+    filename: str = ""
+    suggested_filename: str = ""
+    pattern: str = ""
+    warning: str = ""
+    alternatives: tuple[Candidate, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+    retryable: bool = True
+
+    @property
+    def settled(self) -> bool:
+        return self.state in SETTLED_STATES
+
+    @property
+    def renamed(self) -> bool:
+        return bool(self.filename) and self.filename != self.source.rsplit("/", 1)[-1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,12 +150,19 @@ class ModelChunk:
 
 @dataclass(frozen=True, slots=True)
 class ConfigurationField:
+    """One provider setting. A `toggle` is stored as TOGGLE_ON or TOGGLE_OFF."""
+
     key: str
     label: str
     placeholder: str = ""
     default: str = ""
     secret: bool = False
     required: bool = True
+    kind: Literal["text", "toggle"] = "text"
+
+
+TOGGLE_ON = "on"
+TOGGLE_OFF = "off"
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +201,10 @@ class OllamaDefaults:
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntime:
+    """An opened agent, and the folder workflow it offers, if any."""
+
     session: Any
     model: str
     summary: str
     close_async: tuple[Any, ...] = ()
+    workflow: FolderWorkflow | None = None

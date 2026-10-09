@@ -5,7 +5,7 @@
     .venv/bin/python cleo/scripts/fake_backends.py [scenario] # fakes only
 
 One local port answers both Ollama's streaming `/api/chat` and Nineveh's
-read-only `/api/v1/librarian/*`. Both are needed: Cleo replaces any answer
+`/api/v1/librarian/*`, including the ingest routes a filing Cleo uses. Both are needed: Cleo replaces any answer
 that no successful catalog read backs, so a fake model on its own only ever
 produces the refusal.
 
@@ -18,7 +18,10 @@ is a real, if tiny, one: searches are answered by filtering it.
 A scenario is one JSON file (see `scenarios/demo.json`):
 
 - `libraries`, `series`: the catalog. A series gives `volumes` as a count and
-  may carry an `error` (`status`, `detail`) that its detail read returns.
+  may carry an `error` (`status`, `detail`) that its detail read, and any
+  upload to it, returns.
+- `ingest`: optional; `{"commit": false}` makes placing refused with `403`,
+  as for a token with `ingest:stage` but not `ingest:commit`.
 - `rules`: tried in order, first match wins. `match` is a keyword or a list of
   them, compared case-insensitively. Put specific rules before general ones.
 - `fallback`: the steps for a message no rule matches.
@@ -28,13 +31,22 @@ A step is one of: `{"tool": name, "arguments": {...}}` to call a tool;
 `{"error": text}` for an Ollama error mid-stream; `{"status": code}` for an
 HTTP failure; `{"raw": text}` for a line that is not JSON at all.
 
+An upload is staged like Nineveh would: it must be a zip, its volume number
+comes from its ComicInfo.xml or else the last number in its filename, and a
+number the series already holds is reported as a duplicate. `scenarios/inbox`
+holds volumes that exercise every case; file them with `/file
+cleo/scripts/scenarios/inbox` from the repository root.
+
 Standard library only, so it runs from any Python and never ships in the wheel.
 """
 
 from __future__ import annotations
 
 import argparse
+import email.policy
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -44,15 +56,20 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
+import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
+from xml.etree import ElementTree
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_SCENARIO = HERE / "scenarios" / "demo.json"
+DEFAULT_INBOX = HERE / "scenarios" / "inbox"
 # The per-agent credential override for the Cleo that `OLYMPUS_BOOTSTRAP_CLEO`
 # seeds (olympus.secrets.environment_key for agent "dev-cleo"). The fake token
 # is handed over this way so it never reaches Keychain or any other store.
@@ -65,6 +82,10 @@ METADATA_FILTERS = ("author", "artist", "publisher", "status", "tag", "title")
 VOLUME_BYTES = 180_000_000
 VOLUME_PAGES = 200
 WORDS = re.compile(r"\S+\s*")
+BRACKETED = re.compile(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}")
+LAST_NUMBER = re.compile(r"(\d+)(?!.*\d)")
+PAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+INGEST_PATH = re.compile(r"^/ingest/([^/]+)(/commit)?$")
 
 
 class Scenario:
@@ -77,6 +98,9 @@ class Scenario:
         self.fallback: list[dict[str, Any]] = document.get(
             "fallback", [{"reply": "(fake Ollama: no rule matched that message.)"}]
         )
+        self.allow_commit: bool = document.get("ingest", {}).get("commit", True)
+        self.staged: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
 
     @classmethod
     def load(cls, path: Path) -> Scenario:
@@ -148,6 +172,86 @@ class Scenario:
             "providerTotals": entry.get("providerTotals", {}),
         }
 
+    # --- ingest ----------------------------------------------------------------
+
+    def stage(
+        self, series_id: str, filename: str, data: bytes
+    ) -> tuple[int, dict[str, Any]]:
+        entry = self.series.get(series_id)
+        if entry is None:
+            return 404, {"detail": "No series has that ID."}
+        if "error" in entry:
+            return entry["error"]["status"], {"detail": entry["error"].get("detail")}
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile:
+            return 422, {"detail": "That file is not a CBZ archive."}
+        number = _volume_number(archive, filename) or entry.get("volumes", 0) + 1
+        suggested = f"{entry['localName']} {number:03}.cbz"
+        folder = f"{self._library_path(entry['libraryId'])}/{entry['localName']}"
+        record = {
+            "ingestId": uuid.uuid4().hex[:12],
+            "state": "staged",
+            "seriesId": series_id,
+            "filename": filename,
+            "suggestedFilename": suggested,
+            "siblingPattern": f"{entry['localName']} NNN.cbz",
+            "targetPath": f"{folder}/{suggested}",
+            "size": len(data),
+            "pageCount": _pages(archive),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "duplicateOf": (
+                {"publicationId": f"{series_id}-v{number}", "filename": suggested}
+                if number <= entry.get("volumes", 0)
+                else None
+            ),
+            "createdAt": datetime.now(UTC).isoformat(),
+        }
+        with self._lock:
+            self.staged[record["ingestId"]] = record
+        return 201, record
+
+    def commit(self, ingest_id: str, filename: str | None) -> tuple[int, dict]:
+        with self._lock:
+            record = self.staged.get(ingest_id)
+            if record is None:
+                return 404, {"detail": "Nothing is staged under that ID."}
+            if not self.allow_commit:
+                return 403, {
+                    "detail": "This token may stage volumes but not place them."
+                }
+            del self.staged[ingest_id]
+        name = filename or record["suggestedFilename"]
+        folder = record["targetPath"].rsplit("/", 1)[0]
+        return 200, {
+            "ingestId": ingest_id,
+            "state": "placed",
+            "seriesId": record["seriesId"],
+            "filename": name,
+            "relativePath": f"{folder}/{name}",
+            "size": record["size"],
+            "pageCount": record["pageCount"],
+            "scanStarted": True,
+        }
+
+    def discard(self, ingest_id: str) -> bool:
+        with self._lock:
+            return self.staged.pop(ingest_id, None) is not None
+
+    def pending(self) -> dict[str, Any]:
+        with self._lock:
+            return {"pending": list(self.staged.values())}
+
+    def _library_path(self, library_id: str) -> str:
+        return next(
+            (
+                item.get("relativePath", item["name"])
+                for item in self.libraries
+                if item["id"] == library_id
+            ),
+            library_id,
+        )
+
     def _library_name(self, library_id: str) -> str:
         return next(
             (item["name"] for item in self.libraries if item["id"] == library_id),
@@ -211,6 +315,34 @@ class Scenario:
         }
 
 
+def _volume_number(archive: zipfile.ZipFile, filename: str) -> int | None:
+    """ComicInfo.xml's number, else the last number outside brackets."""
+    try:
+        root = ElementTree.fromstring(archive.read("ComicInfo.xml"))
+        value = root.findtext("Number") or root.findtext("Volume") or ""
+    except (KeyError, ElementTree.ParseError):
+        value = ""
+    if not value.isdigit():
+        found = LAST_NUMBER.search(BRACKETED.sub(" ", filename.removesuffix(".cbz")))
+        value = found.group(1) if found else ""
+    return int(value) if value.isdigit() else None
+
+
+def _pages(archive: zipfile.ZipFile) -> int:
+    return sum(1 for name in archive.namelist() if name.lower().endswith(PAGE_SUFFIXES))
+
+
+def parse_form(content_type: str, body: bytes) -> dict[str, bytes]:
+    """A multipart/form-data body's fields, by name."""
+    header = f"Content-Type: {content_type}\r\n\r\n".encode()
+    message = BytesParser(policy=email.policy.HTTP).parsebytes(header + body)
+    fields: dict[str, bytes] = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        fields[str(name)] = part.get_payload(decode=True) or b""
+    return fields
+
+
 class FakeBackends(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -240,11 +372,14 @@ class Handler(BaseHTTPRequestHandler):
     server: FakeBackends
 
     def do_POST(self) -> None:
-        if urlsplit(self.path).path != "/api/chat":
+        path = urlsplit(self.path).path
+        if path.startswith(f"{LIBRARIAN}/"):
+            self._librarian_post(path.removeprefix(LIBRARIAN))
+            return
+        if path != "/api/chat":
             self._json(404, {"error": f"fake Ollama has no {self.path}"})
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length) or b"{}")
+        body = json.loads(self._body() or b"{}")
         try:
             self._chat(body)
         except (BrokenPipeError, ConnectionResetError):
@@ -260,13 +395,14 @@ class Handler(BaseHTTPRequestHandler):
         if not url.path.startswith(f"{LIBRARIAN}/"):
             self._json(404, {"detail": f"fake Nineveh has no {url.path}"})
             return
-        if not self.headers.get("Authorization", "").startswith("Bearer "):
-            self._json(401, {"detail": "Missing bearer token."})
+        if not self._authorized():
             return
         route = url.path.removeprefix(LIBRARIAN)
         params = {key: values[-1] for key, values in parse_qs(url.query).items()}
         scenario = self.server.scenario
-        if route == "/libraries":
+        if route == "/ingest":
+            self._json(200, scenario.pending())
+        elif route == "/libraries":
             self._json(200, {"libraries": scenario.libraries})
         elif route == "/series":
             self._json(200, scenario.search(params))
@@ -282,6 +418,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, scenario.detail(entry))
         else:
             self._json(404, {"detail": f"fake Nineveh has no {url.path}"})
+
+    def do_DELETE(self) -> None:
+        path = urlsplit(self.path).path.removeprefix(LIBRARIAN)
+        found = INGEST_PATH.match(path)
+        if not self._authorized():
+            return
+        if found is None or found.group(2):
+            self._json(404, {"detail": f"fake Nineveh has no {self.path}"})
+        elif self.server.scenario.discard(unquote(found.group(1))):
+            self.server.log(f"ingest   discarded {found.group(1)}")
+            self._empty(204)
+        else:
+            self._json(404, {"detail": "Nothing is staged under that ID."})
+
+    def _librarian_post(self, route: str) -> None:
+        if not self._authorized():
+            return
+        scenario = self.server.scenario
+        found = INGEST_PATH.match(route)
+        if route == "/ingest":
+            form = parse_form(self.headers.get("Content-Type", ""), self._body())
+            series_id = form.get("series_id", b"").decode()
+            filename = form.get("filename", b"").decode()
+            status, record = scenario.stage(series_id, filename, form.get("file", b""))
+            self.server.log(f"ingest   staged {filename!r} → {status}")
+            self._json(status, record)
+        elif found and found.group(2):
+            body = json.loads(self._body() or b"null") or {}
+            status, record = scenario.commit(
+                unquote(found.group(1)), body.get("filename")
+            )
+            self.server.log(f"ingest   commit {found.group(1)} → {status}")
+            self._json(status, record)
+        else:
+            self._json(404, {"detail": f"fake Nineveh has no {self.path}"})
+
+    def _authorized(self) -> bool:
+        if self.headers.get("Authorization", "").startswith("Bearer "):
+            return True
+        self._json(401, {"detail": "Missing bearer token."})
+        return False
+
+    def _body(self) -> bytes:
+        return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
     def _chat(self, body: dict[str, Any]) -> None:
         name, round_, step = self.server.scenario.next_step(body.get("messages", []))
@@ -339,6 +519,11 @@ class Handler(BaseHTTPRequestHandler):
         """One HTTP chunk. Empty data is the terminator."""
         self.wfile.write(f"{len(data):X}\r\n".encode() + data + b"\r\n")
         self.wfile.flush()
+
+    def _empty(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _json(self, status: int, value: dict[str, Any]) -> None:
         data = json.dumps(value).encode()
@@ -428,7 +613,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"Fake Ollama and Nineveh on {server.url} ({args.scenario.name})\n"
-        f"Scripted keywords: {keywords}\n\n"
+        f"Scripted keywords: {keywords}\n"
+        f"Volumes to file, in Olympus: /file {DEFAULT_INBOX}\n\n"
         "In another terminal:\n"
         f"  OLLAMA_URL={server.url} NINEVEH_URL={server.url} {FAKE_TOKEN_VARIABLE}=nvh_fake \\\n"
         f"  OLYMPUS_MODEL=fake:{args.scenario.stem} OLYMPUS_STATE_DIR=$(mktemp -d)/state \\\n"

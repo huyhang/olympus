@@ -54,6 +54,14 @@
     }
   ],
   "rules": [
+    {"match": "plt_", "steps": [{"reply": "Pluto"}]},
+    {"match": "mystery_scan", "steps": [{"reply": "UNKNOWN"}]},
+    {
+      "match": ["file the", "file my", "file these", "put these"],
+      "steps": [
+        {"tool": "open_filing_board", "arguments": {"folder": "cleo/scripts/scenarios/inbox"}}
+      ]
+    },
     {
       "match": "slow",
       "steps": [

@@ -7,10 +7,12 @@ import threading
 
 import pytest
 from cleo.config import CleoSettings
+from cleo.ingest import NinevehIngestClient
+from cleo.ports import IngestError
 from cleo.provider import CleoProvider
 from fake_backends import DEFAULT_SCENARIO, FakeBackends, Scenario
 
-from olympus.domain import AgentProfile, OllamaDefaults
+from olympus.domain import TOGGLE_OFF, TOGGLE_ON, AgentProfile, OllamaDefaults
 from olympus.ports import ProviderError
 
 
@@ -112,3 +114,55 @@ async def _exercise(runtime):
 async def _close(runtime):
     for callback in runtime.close_async:
         await callback()
+
+
+def filing_profile(url: str, filing: str = TOGGLE_ON) -> AgentProfile:
+    return AgentProfile(
+        id="cleo-files",
+        kind="cleo",
+        name="Cleo",
+        settings={"nineveh_url": url, "filing": filing},
+    )
+
+
+def test_filing_is_an_opt_in_toggle():
+    field = next(f for f in CleoProvider().definition.fields if f.key == "filing")
+    assert (field.kind, field.default, field.required) == ("toggle", TOGGLE_OFF, False)
+
+
+def test_a_filing_cleo_opens_with_the_filing_board(backend):
+    provider = CleoProvider()
+    stored = DictSecrets({("cleo-files", "nineveh_token"): "nvh_fake"})
+    defaults = OllamaDefaults(backend.url, "fake")
+    plain = provider.open(filing_profile(backend.url, TOGGLE_OFF), stored, defaults)
+    filing = provider.open(filing_profile(backend.url), stored, defaults)
+    assert plain.workflow is None
+    assert filing.workflow.title == "File volumes from a folder"
+    assert filing.summary.endswith("· filing on")
+    # The board's uploads are withdrawn before any client it needs closes.
+    assert [close.__qualname__ for close in filing.close_async] == [
+        "FilingWorkflow.aclose",
+        *(close.__qualname__ for close in plain.close_async),
+        "NinevehIngestClient.aclose",
+    ]
+    asyncio.run(_close(plain))
+    asyncio.run(_close(filing))
+
+
+def test_probing_a_filing_cleo_checks_it_may_upload(backend, monkeypatch):
+    provider = CleoProvider()
+    secrets = {"nineveh_token": "nvh_fake"}
+    defaults = OllamaDefaults(backend.url, "fake")
+    asyncio.run(provider.probe(filing_profile(backend.url), secrets, defaults))
+
+    for failure, message in (
+        (IngestError("refused", 403), "needs ingest:stage"),
+        (IngestError("Nineveh is unavailable."), "Filing is on, but Nineveh"),
+    ):
+
+        async def refuse(self, failure=failure):
+            raise failure
+
+        monkeypatch.setattr(NinevehIngestClient, "pending", refuse)
+        with pytest.raises(ProviderError, match=message):
+            asyncio.run(provider.probe(filing_profile(backend.url), secrets, defaults))

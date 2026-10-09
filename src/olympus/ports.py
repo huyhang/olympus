@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -11,11 +11,13 @@ from olympus.domain import (
     AgentEvent,
     AgentProfile,
     AgentRuntime,
+    Candidate,
     Conversation,
     Evidence,
     Identity,
     Message,
     OllamaDefaults,
+    Proposal,
 )
 
 
@@ -29,6 +31,10 @@ class StoreError(OlympusError):
 
 class ProviderError(OlympusError):
     """An agent configuration or connection is invalid."""
+
+
+class ReviewError(OlympusError):
+    """A review action the agent refused, explained for the user."""
 
 
 class SecretStore(Protocol):
@@ -103,3 +109,55 @@ class ConversationRepository(Protocol):
     def clear_conversations(self) -> int: ...
 
     def export_markdown(self, conversation_id: str) -> Path: ...
+
+
+ProposalListener = Callable[[Proposal], None]
+
+
+class ReviewSession(Protocol):
+    """One batch of proposals under review, owned by the agent that made them.
+
+    Every change, including those an action causes, reaches the listener the
+    session was opened with as a fresh `Proposal` snapshot. Actions raise
+    `ReviewError` when they do not apply to a proposal in its current state.
+    """
+
+    async def run(self) -> str:
+        """Discover and prepare every proposal; returns once all are prepared.
+
+        The result is a note about the review as a whole, such as a folder
+        too large to read in full, or "" when there is nothing to say.
+        """
+        ...
+
+    async def place(self, proposal_id: str) -> None: ...
+
+    async def skip(self, proposal_id: str) -> None: ...
+
+    async def rename(self, proposal_id: str, filename: str) -> None: ...
+
+    async def choose(self, proposal_id: str, choice: Candidate) -> None: ...
+
+    async def search(self, query: str) -> tuple[Candidate, ...]: ...
+
+    async def close(self) -> None:
+        """Withdraw whatever was prepared and not settled.
+
+        Work still in flight is stopped, or withdrawn as soon as it lands.
+        """
+        ...
+
+
+class FolderWorkflow(Protocol):
+    """An agent's offer to turn the files in a folder into proposals."""
+
+    @property
+    def title(self) -> str: ...
+
+    def describe(self, folder: Path, recursive: bool) -> str:
+        """A one-line preview of what a review of this folder would cover."""
+        ...
+
+    def open(
+        self, folder: Path, recursive: bool, listener: ProposalListener
+    ) -> ReviewSession: ...

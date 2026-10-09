@@ -6,7 +6,14 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from olympus.domain import AgentProfile, AgentRuntime, Candidate, Conversation, Evidence
+from olympus.domain import (
+    AgentProfile,
+    AgentRuntime,
+    Candidate,
+    Conversation,
+    Evidence,
+    SuggestedAction,
+)
 
 
 @dataclass
@@ -33,6 +40,7 @@ class Reply:
     status: str = ""
     evidence: list[Evidence] = field(default_factory=list)
     choices: tuple[Candidate, ...] = ()
+    action: SuggestedAction | None = None
     widget: Any = None
     finished: bool = False
 

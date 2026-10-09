@@ -13,6 +13,7 @@ ESCAPE_SEQUENCES = re.compile(
     rf"{_CSI}[@-~]|{_STRING}(?:\x07|\x1b\\|\x9c)|{_OTHER}[0-~]"
 )
 UNFINISHED_SEQUENCE = re.compile(rf"(?:{_CSI}|{_STRING}\x1b?|{_OTHER})\Z")
+SIZE_UNITS = (("GB", 1e9), ("MB", 1e6), ("KB", 1e3))
 
 
 def plain_text(value: str) -> str:
@@ -22,6 +23,14 @@ def plain_text(value: str) -> str:
 def streamable(partial: str) -> str:
     tail = UNFINISHED_SEQUENCE.search(partial)
     return plain_text(partial[: tail.start()] if tail else partial)
+
+
+def human_size(size: int) -> str:
+    """Decimal units, as disks and Finder count: `1.5 KB` is 1,500 bytes."""
+    for unit, scale in SIZE_UNITS:
+        if size >= scale:
+            return f"{size / scale:.1f} {unit}"
+    return f"{size} B"
 
 
 def format_timestamp(value: str, timezone: tzinfo | None = None) -> str:

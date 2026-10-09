@@ -31,6 +31,7 @@ HELP = """### Local commands
 - `/style compact|detailed` — choose the answer depth
 - `/export [ID]` — export a conversation as Markdown
 - `/clear [ID|all]` — request confirmed history removal
+- `/file [FOLDER]` — review the agent's proposals for a folder's files (Ctrl+O)
 - `/help` — show this list
 
 These commands are handled by Olympus and are never sent to an agent.

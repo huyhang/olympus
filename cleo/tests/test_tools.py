@@ -82,3 +82,37 @@ def test_unknown_tools_and_invalid_arguments_never_reach_the_catalog(call):
     with pytest.raises(ToolDispatchError):
         run(ReadOnlyToolRegistry(catalog).execute(call))
     assert catalog.calls == []
+
+
+def test_the_filing_tool_exists_only_when_filing_is_on():
+    plain = ReadOnlyToolRegistry(FakeCatalog())
+    filing = ReadOnlyToolRegistry(FakeCatalog(), filing=True)
+    assert not plain.offers_filing and filing.offers_filing
+    names = {item["function"]["name"] for item in filing.definitions}
+    assert "open_filing_board" in names
+    with pytest.raises(ToolDispatchError, match="Unsupported"):
+        run(plain.execute(ToolCall("open_filing_board", {"folder": "~/Downloads"})))
+
+
+@pytest.mark.parametrize(
+    ("arguments", "outcome"),
+    [
+        ({"folder": "~/Downloads"}, "~/Downloads"),
+        ({"folder": " `~/Down\x1bloads` "}, "~/Downloads"),
+        ({"folder": ""}, "invalid length"),
+        ({"folder": "x" * 1025}, "invalid length"),
+        ({"folder": 7}, "must be text"),
+        ({}, "do not match"),
+        ({"folder": "a", "extra": 1}, "do not match"),
+    ],
+)
+def test_the_filing_tool_only_names_a_folder(arguments, outcome):
+    catalog = FakeCatalog()
+    registry = ReadOnlyToolRegistry(catalog, filing=True)
+    call = ToolCall("open_filing_board", arguments)
+    if outcome.startswith("~"):
+        assert run(registry.execute(call)) == {"folder": outcome}
+    else:
+        with pytest.raises(ToolDispatchError, match=outcome):
+            run(registry.execute(call))
+    assert catalog.calls == []

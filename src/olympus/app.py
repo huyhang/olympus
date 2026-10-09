@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Coroutine, Iterable
 from functools import partial
+from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
@@ -24,11 +25,21 @@ from olympus.domain import (
     Candidate,
     Conversation,
     Message,
+    Proposal,
+    SuggestedAction,
 )
-from olympus.ports import ConversationRepository, OlympusError, StoreError
+from olympus.ports import (
+    ConversationRepository,
+    FolderWorkflow,
+    OlympusError,
+    StoreError,
+)
 from olympus.presentation import format_timestamp, plain_text
 from olympus.runtimes import RuntimePool
 from olympus.services import AgentService, fresh_profile
+from olympus.ui.folders import FolderPickerScreen, FolderRequest
+from olympus.ui.proposals import summary_evidence, summary_markdown
+from olympus.ui.review import ReviewBoardScreen
 from olympus.ui.screens import (
     AgentManagerResult,
     AgentManagerScreen,
@@ -68,6 +79,7 @@ WORKSPACE_ACTIONS = frozenset(
         "previous_input",
         "next_input",
         "cancel_reply",
+        "review_folder",
     }
 )
 
@@ -78,6 +90,14 @@ def _agent_shortcuts() -> list[Binding]:
         Binding(f"ctrl+{n}", f"switch_agent({n})", f"Agent {n}", show=False)
         for n in range(1, 6)
     ]
+
+
+class OfferButton(Button):
+    """An agent's suggested action under its reply. Only a press starts it."""
+
+    def __init__(self, action: SuggestedAction) -> None:
+        super().__init__(action.label, classes="offer", variant="primary")
+        self.offer = action
 
 
 class OlympusApp(App[None]):
@@ -109,6 +129,7 @@ class OlympusApp(App[None]):
     .user { background: #172438; border-left: thick #58a6ff; }
     .assistant { background: #111c19; border-left: thick #3fb950; }
     .evidence { margin: 0 2 1 4; color: #9fb2c5; }
+    .offer { margin: 0 2 1 4; }
     #status { height: 1; padding: 0 3; color: #8b9bab; }
     #compose-row { height: 7; margin: 0 2 1 2; }
     #composer { width: 1fr; height: 6; border: tall #2f81f7; background: #0e1621; }
@@ -128,6 +149,8 @@ class OlympusApp(App[None]):
     #history-search { margin-bottom: 1; }
     #history-list, #manager-agent-list { height: 1fr; }
     #identity-persona, #agent-persona { height: 8; min-height: 5; }
+    .toggle-row { height: 3; margin-top: 1; }
+    .toggle-row Label { padding: 1 1; }
     #agent-form { overflow-y: auto; }
     #agent-form-status, #defaults-status { height: 2; margin-top: 1; }
     .dialog {
@@ -153,6 +176,7 @@ class OlympusApp(App[None]):
         Binding("ctrl+r", "history", "History", priority=True),
         Binding("ctrl+h", "history", "History", show=False, priority=True),
         Binding("ctrl+s", "identity", "Style", priority=True),
+        Binding("ctrl+o", "review_folder", "File folder", priority=True),
         Binding("ctrl+up", "previous_input", "Previous input", show=False),
         Binding("ctrl+down", "next_input", "Next input", show=False),
         Binding("escape", "cancel_reply", "Cancel reply"),
@@ -160,10 +184,16 @@ class OlympusApp(App[None]):
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
-    def __init__(self, service: AgentService, settings: Settings) -> None:
+    def __init__(
+        self,
+        service: AgentService,
+        settings: Settings,
+        start_folder: Path | None = None,
+    ) -> None:
         super().__init__()
         self._service = service
         self._settings = settings
+        self._start_folder = start_folder or Path.home()
         self._defaults = service.store.ollama_defaults(settings)
         self._profile: AgentProfile | None = None
         self._repository: ConversationRepository | None = None
@@ -245,6 +275,8 @@ class OlympusApp(App[None]):
             await self._submit()
         elif event.button.id in {"quick-add", "manage-agents"}:
             self.action_agents()
+        elif isinstance(event.button, OfferButton):
+            self._review_folder(event.button.offer.argument)
 
     # -- the main workspace -------------------------------------------------
 
@@ -486,6 +518,10 @@ class OlympusApp(App[None]):
             reply.choices = event.candidates
             reply.content = choice_markdown(event.text, event.candidates)
             await self._render_reply(reply)
+        elif event.kind == "action" and event.action:
+            reply.action = event.action
+            reply.content = event.text
+            await self._render_reply(reply)
         elif event.kind == "done":
             reply.content = event.text
 
@@ -517,6 +553,8 @@ class OlympusApp(App[None]):
             await reply.widget.update(message_markdown(message, reply.profile.name))
             for item in reply.evidence:
                 await self._transcript().mount(evidence_panel(item))
+            if reply.action:
+                await self._transcript().mount(OfferButton(reply.action))
         else:
             await self._show_conversation()
         self._status().update("Ready")
@@ -647,6 +685,7 @@ class OlympusApp(App[None]):
             "style": self._command_style,
             "export": self._command_export,
             "clear": self._command_clear,
+            "file": self._command_file,
             "help": self._command_help,
         }
         handler = handlers.get(command.name)
@@ -766,6 +805,80 @@ class OlympusApp(App[None]):
     async def _command_help(self, argument: str) -> None:
         await self._local_message(HELP if not argument else "Usage: `/help`")
 
+    async def _command_file(self, argument: str) -> None:
+        self._review_folder(argument)
+
+    # -- reviewing a folder -------------------------------------------------
+
+    def _workflow(self) -> FolderWorkflow | None:
+        runtime = self._runtime(self._profile) if self._profile else None
+        return runtime.workflow if runtime else None
+
+    def _review_folder(self, initial: str) -> None:
+        """Pick a folder, review the agent's proposals, then file a summary."""
+        if self._profile is None or self._conversation is None:
+            return
+        workflow = self._workflow()
+        if workflow is None:
+            self.notify(
+                f"{self._profile.name} cannot file from a folder. Turn filing on "
+                "in its settings under Ctrl+A.",
+                severity="warning",
+            )
+            return
+        if self._refuse_input("/file"):
+            return
+        target = (self._profile, self._conversation.id)
+        self.push_screen(
+            FolderPickerScreen(
+                workflow, initial or f"{self._start_folder}/", self._start_folder
+            ),
+            lambda request: self._folder_chosen(workflow, target, request),
+        )
+
+    def _folder_chosen(
+        self,
+        workflow: FolderWorkflow,
+        target: tuple[AgentProfile, str],
+        request: FolderRequest | None,
+    ) -> None:
+        if request is None:
+            return
+        self.push_screen(
+            ReviewBoardScreen(workflow, request, target[0].name),
+            lambda proposals: self.run_worker(
+                self._file_review(workflow, target, request, proposals or [])
+            ),
+        )
+
+    async def _file_review(
+        self,
+        workflow: FolderWorkflow,
+        target: tuple[AgentProfile, str],
+        request: FolderRequest,
+        proposals: list[Proposal],
+    ) -> None:
+        """Record the review in the conversation it was started from."""
+        if not proposals:
+            return
+        profile, conversation_id = target
+        repository = self._service.store.for_agent(profile.id)
+        asked = Message("user", f"{workflow.title}: {request.folder}")
+        summary = Message(
+            "assistant", summary_markdown(workflow.title, request.folder, proposals)
+        )
+        if repository.add_message(conversation_id, asked):
+            repository.add_message(
+                conversation_id, summary, summary_evidence(request.folder, proposals)
+            )
+        if (
+            self._profile
+            and self._profile.id == profile.id
+            and self._conversation
+            and self._conversation.id == conversation_id
+        ):
+            await self._show_conversation()
+
     # -- actions ------------------------------------------------------------
 
     def get_system_commands(self, screen: Screen[Any]) -> Iterable[SystemCommand]:
@@ -780,6 +893,7 @@ class OlympusApp(App[None]):
                 partial(self._switch_to, profile),
             )
         yield from self._conversation_commands()
+        yield from self._workflow_commands()
         yield SystemCommand(
             "Toggle agent sidebar",
             "Show or hide navigation",
@@ -807,6 +921,17 @@ class OlympusApp(App[None]):
                 f"Open: {conversation.title}",
                 f"{name} · {format_timestamp(conversation.updated_at)}",
                 partial(self._show_conversation_later, conversation),
+            )
+
+    def _workflow_commands(self) -> Iterable[SystemCommand]:
+        if self._profile is None:
+            return
+        runtime = self._runtimes.cached(self._profile.id)
+        if runtime and runtime.workflow:
+            yield SystemCommand(
+                f"{runtime.workflow.title}…",
+                f"{self._profile.name} proposes, you approve · Ctrl+O",
+                self.action_review_folder,
             )
 
     def _switch_to(self, profile: AgentProfile) -> None:
@@ -867,6 +992,9 @@ class OlympusApp(App[None]):
             if self._input_index < len(self._input_history)
             else ""
         )
+
+    def action_review_folder(self) -> None:
+        self._review_folder("")
 
     def action_cancel_reply(self) -> None:
         if self._conversation:

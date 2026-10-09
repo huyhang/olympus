@@ -1,4 +1,9 @@
-"""A closed registry of model-callable, read-only catalog tools."""
+"""A closed registry of model-callable tools, none of which writes anything.
+
+Besides the catalog reads, a filing-enabled Cleo may offer the user its
+filing board. That tool touches no file and no service: it only names a
+folder for a button the user may or may not press.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +11,35 @@ from typing import Any
 
 from cleo.domain import SEARCH_FIELD_LIMITS, ToolCall
 from cleo.ports import CatalogGateway
+from olympus.presentation import CONTROL_CHARACTERS
 
 
 class ToolDispatchError(RuntimeError):
     """A model requested something outside Cleo's tool contract."""
+
+
+FILING_TOOL = "open_filing_board"
+MAX_FOLDER_LENGTH = 1_024
+FILING_DEFINITION: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": FILING_TOOL,
+        "description": (
+            "Offer the user the filing board for a folder on their computer, "
+            "where they review where each comic or manga volume would go and "
+            "approve it. Use when they ask to file, upload, add, or place "
+            "volumes from a folder. It uploads nothing by itself."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "folder": {"type": "string", "maxLength": MAX_FOLDER_LENGTH}
+            },
+            "required": ["folder"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
@@ -85,14 +115,24 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
 
 
 class ReadOnlyToolRegistry:
-    def __init__(self, catalog: CatalogGateway) -> None:
+    def __init__(self, catalog: CatalogGateway, filing: bool = False) -> None:
         self._catalog = catalog
+        self._filing = filing
+
+    @property
+    def offers_filing(self) -> bool:
+        return self._filing
 
     @property
     def definitions(self) -> tuple[dict[str, Any], ...]:
+        if self._filing:
+            return (*TOOL_DEFINITIONS, FILING_DEFINITION)
         return TOOL_DEFINITIONS
 
     async def execute(self, call: ToolCall) -> dict[str, Any]:
+        if call.name == FILING_TOOL and self._filing:
+            self._require_keys(call.arguments, {"folder"}, {"folder"})
+            return {"folder": self._folder(call.arguments["folder"])}
         if call.name == "list_libraries":
             self._require_keys(call.arguments, set())
             return await self._catalog.list_libraries()
@@ -125,6 +165,15 @@ class ReadOnlyToolRegistry:
         missing = (required or set()) - set(arguments)
         if unknown or missing:
             raise ToolDispatchError("The tool arguments do not match its schema.")
+
+    @staticmethod
+    def _folder(value: Any) -> str:
+        if not isinstance(value, str):
+            raise ToolDispatchError("The folder must be text.")
+        folder = CONTROL_CHARACTERS.sub("", value).strip().strip("`")
+        if not folder or len(folder) > MAX_FOLDER_LENGTH:
+            raise ToolDispatchError("The folder has an invalid length.")
+        return folder
 
     @staticmethod
     def _validate_search(arguments: dict[str, Any]) -> None:

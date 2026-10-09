@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC
 
+import pytest
+
 from olympus import cli, config
 from olympus.commands import Command, parse_command
 from olympus.ports import StoreError
-from olympus.presentation import format_timestamp, plain_text, streamable
+from olympus.presentation import format_timestamp, human_size, plain_text, streamable
 
 
 def test_commands_and_terminal_safe_formatting():
@@ -49,3 +51,20 @@ def test_cli_launches_and_formats_startup_failures(monkeypatch, tmp_path):
         assert str(error) == "olympus: broken state"
     else:  # pragma: no cover - assertion aid
         raise AssertionError("startup failure did not exit")
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        (0, "0 B"),
+        (999, "999 B"),
+        (1_000, "1.0 KB"),
+        (1_500, "1.5 KB"),
+        (182_000_000, "182.0 MB"),
+        (2_400_000_000, "2.4 GB"),
+        (4_000_000_000, "4.0 GB"),
+        (5_000_000_000_000, "5000.0 GB"),
+    ],
+)
+def test_human_size(size, expected):
+    assert human_size(size) == expected

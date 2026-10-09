@@ -8,19 +8,26 @@ over HTTP, and hold every fake catalog response to the vendored contract.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from cleo.agent import UNSUPPORTED_REPLY, Librarian
 from cleo.config import CleoSettings
 from cleo.domain import AgentEvent, Identity
+from cleo.ingest import NinevehIngestClient
 from cleo.nineveh import NinevehCatalogClient
 from cleo.ollama import OllamaChatModel
+from cleo.ports import IngestError
+from cleo.provider import CleoProvider
 from cleo.tools import ReadOnlyToolRegistry
-from fake_backends import DEFAULT_SCENARIO, FakeBackends, Scenario
+from fake_backends import DEFAULT_INBOX, DEFAULT_SCENARIO, FakeBackends, Scenario
+
+from olympus.domain import AgentProfile, OllamaDefaults, Proposal
 
 CONTRACT = (
     Path(__file__).resolve().parent.parent / "contracts" / "librarian-openapi.json"
@@ -156,3 +163,167 @@ def test_every_fake_catalog_response_has_the_fields_the_contract_requires(server
     schemas = json.loads(CONTRACT.read_text(encoding="utf-8"))["components"]["schemas"]
     for name, payload in asyncio.run(fetch()):
         assert missing(payload, schemas[name], schemas) == [], name
+
+
+@pytest.fixture
+def fresh():
+    """A server of one's own, for tests that leave uploads behind."""
+    backends = FakeBackends(Scenario.load(DEFAULT_SCENARIO), port=0, delay=0)
+    threading.Thread(target=backends.serve_forever, daemon=True).start()
+    yield backends
+    backends.shutdown()
+    backends.server_close()
+
+
+def fixture_bytes(name: str) -> io.BytesIO:
+    return io.BytesIO((DEFAULT_INBOX / name).read_bytes())
+
+
+def test_every_fake_ingest_response_has_the_fields_the_contract_requires(fresh):
+    async def exercise():
+        ingest = NinevehIngestClient(settings(fresh))
+        try:
+            staged = await ingest.stage(
+                "vinland-saga",
+                "vinland_saga_v12.cbz",
+                fixture_bytes("vinland_saga_v12.cbz"),
+            )
+            spare = await ingest.stage(
+                "pluto", "pluto_v08.cbz", fixture_bytes("extras/pluto_v08.cbz")
+            )
+            pending = await ingest.pending()
+            placed = await ingest.commit(staged["ingestId"], "Vinland Saga 012 (2).cbz")
+            await ingest.discard(spare["ingestId"])
+            return staged, pending, placed, await ingest.pending()
+        finally:
+            await ingest.aclose()
+
+    staged, pending, placed, after = asyncio.run(exercise())
+    schemas = json.loads(CONTRACT.read_text(encoding="utf-8"))["components"]["schemas"]
+    for name, payload in (
+        ("StagedIngest", staged),
+        ("PendingIngests", pending),
+        ("PlacedIngest", placed),
+    ):
+        assert missing(payload, schemas[name], schemas) == [], name
+    assert staged["duplicateOf"]["filename"] == "Vinland Saga 012.cbz"
+    assert placed["relativePath"] == "Manga/Vinland Saga/Vinland Saga 012 (2).cbz"
+    assert len(pending["pending"]) == 2 and after == {"pending": []}
+
+
+@pytest.mark.parametrize(
+    ("series_id", "content", "status"),
+    [
+        ("pluto", b"not a zip", 422),
+        ("no-such-series", None, 404),
+        ("berserk", None, 403),
+    ],
+)
+def test_the_fake_refuses_uploads_nineveh_would(fresh, series_id, content, status):
+    async def exercise():
+        ingest = NinevehIngestClient(settings(fresh))
+        upload = io.BytesIO(content) if content else fixture_bytes("Berserk v42.cbz")
+        try:
+            await ingest.stage(series_id, "x.cbz", upload)
+        finally:
+            await ingest.aclose()
+
+    with pytest.raises(IngestError) as raised:
+        asyncio.run(exercise())
+    assert raised.value.status == status
+
+
+def test_a_stage_only_scenario_refuses_to_place(fresh):
+    fresh.scenario.allow_commit = False
+
+    async def exercise():
+        ingest = NinevehIngestClient(settings(fresh))
+        try:
+            staged = await ingest.stage(
+                "pluto", "pluto_v08.cbz", fixture_bytes("extras/pluto_v08.cbz")
+            )
+            with pytest.raises(IngestError) as raised:
+                await ingest.commit(staged["ingestId"])
+            with pytest.raises(IngestError, match="no longer has"):
+                await ingest.discard("never-staged")
+            with pytest.raises(IngestError, match="no longer has"):
+                await ingest.commit("never-staged")
+            return raised.value.status, await ingest.pending()
+        finally:
+            await ingest.aclose()
+
+    status, pending = asyncio.run(exercise())
+    assert status == 403 and len(pending["pending"]) == 1
+
+
+def test_unknown_or_unauthenticated_ingest_requests_are_refused(fresh):
+    with httpx.Client(base_url=fresh.url) as client:
+        assert client.delete("/api/v1/librarian/ingest/x").status_code == 401
+        auth = {"Authorization": "Bearer nvh_fake"}
+        assert (
+            client.delete("/api/v1/librarian/ingest/x/commit", headers=auth).status_code
+            == 404
+        )
+        assert client.post("/api/v1/librarian/other", headers=auth).status_code == 404
+        assert client.post("/api/v1/librarian/ingest").status_code == 401
+
+
+def test_the_fixture_inbox_exercises_every_kind_of_proposal(fresh):
+    async def exercise():
+        profile = AgentProfile(
+            id="cleo",
+            kind="cleo",
+            name="Cleo",
+            settings={"nineveh_url": fresh.url, "filing": "on"},
+        )
+        secrets = type("S", (), {"get": lambda self, agent, key: "nvh_fake"})()
+        runtime = CleoProvider().open(
+            profile, secrets, OllamaDefaults(fresh.url, "fake")
+        )
+        latest: dict[str, Proposal] = {}
+        session = runtime.workflow.open(
+            DEFAULT_INBOX, True, lambda p: latest.update({p.id: p})
+        )
+        try:
+            await session.run()
+            await session.close()
+        finally:
+            for close in runtime.close_async:
+                await close()
+        return latest
+
+    latest = asyncio.run(exercise())
+    states = {name: (item.state, bool(item.warning)) for name, item in latest.items()}
+    assert states == {
+        "[Digital] Vinland.Saga.v14 (2024) (1r0n).cbz": ("ready", False),
+        "Berserk v42.cbz": ("failed", False),
+        "extras/pluto_v08.cbz": ("ready", True),
+        "mystery_scan.cbz": ("needs_choice", False),
+        "PLT_Urasawa_TZK_09.cbz": ("ready", False),
+        "saga_v11.cbz": ("needs_choice", False),
+        "scan_0042.cbz": ("ready", False),
+        "vinland_saga_v12.cbz": ("ready", True),
+        "Vinland_Saga_v13.cbz": ("ready", False),
+    }
+    assert latest["PLT_Urasawa_TZK_09.cbz"].subject_note.endswith(
+        "suggested by the model"
+    )
+    assert latest["scan_0042.cbz"].subject.title == "20th Century Boys"
+    assert fresh.scenario.pending() == {"pending": []}
+
+
+def test_asking_to_file_offers_the_board(server):
+    async def collect():
+        model = OllamaChatModel(server.url, "fake")
+        catalog = NinevehCatalogClient(settings(server))
+        agent = Librarian(model, ReadOnlyToolRegistry(catalog, filing=True))
+        try:
+            question = "Please file the volumes in my downloads"
+            return [event async for event in agent.respond([], question, Identity())]
+        finally:
+            await model.aclose()
+            await catalog.aclose()
+
+    offer = asyncio.run(collect())[-1]
+    assert offer.kind == "action"
+    assert offer.action.argument == "cleo/scripts/scenarios/inbox"

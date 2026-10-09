@@ -7,8 +7,16 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from cleo.ports import CatalogError, ChatModel, ModelError
-from cleo.tools import ReadOnlyToolRegistry, ToolDispatchError
-from olympus.domain import AgentEvent, Candidate, Evidence, Identity, Message, ToolCall
+from cleo.tools import FILING_TOOL, ReadOnlyToolRegistry, ToolDispatchError
+from olympus.domain import (
+    AgentEvent,
+    Candidate,
+    Evidence,
+    Identity,
+    Message,
+    SuggestedAction,
+    ToolCall,
+)
 from olympus.presentation import plain_text, streamable
 
 MAX_TOOL_ROUNDS = 6
@@ -20,6 +28,15 @@ UNSUPPORTED_REPLY = (
 EMPTY_REPLY = "Nineveh returned no answer."
 NUDGE = "Answer the question from the tool results above, in one or two sentences."
 CHOICE_PROMPT = "Several series match that name. Which one do you mean?"
+OFFER_REPLY = (
+    "I can file the volumes in `{folder}`. Open the filing board to see which "
+    "series each one belongs to and where it would go; nothing is placed until "
+    "you approve it. `/file {folder}` opens it too."
+)
+FILING_RULE = """- When the user asks to file, upload, add, or place volumes from a folder,
+  call open_filing_board with that folder. It only offers a review board; the
+  user approves every volume there. Never say anything was uploaded or placed.
+"""
 
 CORE_PROMPT = """You are {name}, a librarian for the user's Nineveh catalog.
 
@@ -31,7 +48,7 @@ Hard rules:
 - You can only read libraries, search series, and read one series in detail.
 - You cannot ingest, modify, rename, move, overwrite, or delete anything.
 - You cannot browse the web, use a shell, or inspect local files.
-- For an unsupported information request, state the limitation without mentioning
+{filing_rule}- For an unsupported information request, state the limitation without mentioning
   changes. Only when the user explicitly requests a mutation should you confirm
   that nothing was changed. Never append change-status boilerplate to read answers.
 - For author searches, always use find_series_by_author. The query field of
@@ -149,6 +166,11 @@ class Librarian:
                 state.catalog_failure = str(error)
                 result = {"error": str(error)}
             else:
+                offer = filing_offer(call.name, payload)
+                if offer is not None:
+                    state.finished = True
+                    yield offer
+                    return
                 result = payload
                 state.grounded = True
                 yield AgentEvent(
@@ -184,9 +206,8 @@ class Librarian:
             return AgentEvent("done", content)
         return AgentEvent("done", EMPTY_REPLY) if state.nudged else None
 
-    @staticmethod
     def _messages(
-        history: Sequence[Message], question: str, identity: Identity
+        self, history: Sequence[Message], question: str, identity: Identity
     ) -> list[dict[str, Any]]:
         persona = identity.persona.strip() or "Friendly, clear, and concise."
         messages: list[dict[str, Any]] = [
@@ -196,6 +217,7 @@ class Librarian:
                     name=identity.name,
                     persona=persona,
                     response_style=identity.response_style,
+                    filing_rule=FILING_RULE if self._tools.offers_filing else "",
                 ),
             }
         ]
@@ -213,6 +235,7 @@ class Librarian:
             "search_series": "Searching Nineveh…",
             "find_series_by_author": "Searching Nineveh by author…",
             "get_series": "Reading series details from Nineveh…",
+            FILING_TOOL: "Preparing the filing board…",
         }.get(tool_name, "Checking the read-only tool request…")
 
 
@@ -233,6 +256,20 @@ class _Turn:
         self.nudged = False
         self.finished = False
         self.catalog_failure = ""
+
+
+def filing_offer(tool_name: str, payload: Any) -> AgentEvent | None:
+    """The filing-board button, when that is what the model asked for.
+
+    The user still has to press it: the model only names the folder.
+    """
+    if tool_name != FILING_TOOL or not isinstance(payload, dict):
+        return None
+    folder = plain_text(str(payload.get("folder") or ""))
+    if not folder:
+        return None
+    action = SuggestedAction("review_folder", f"Open filing board · {folder}", folder)
+    return AgentEvent("action", text=OFFER_REPLY.format(folder=folder), action=action)
 
 
 def ambiguous_candidates(tool_name: str, payload: Any) -> tuple[Candidate, ...]:

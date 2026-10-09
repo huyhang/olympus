@@ -4,14 +4,16 @@ New installation? Follow the [getting-started guide](doc/getting-started.md).
 
 A librarian agent for Nineveh (API contract in the `contracts` directory).
 Cleo answers questions about what is in the library, driven by a small
-language model running locally. It runs inside [Olympus](../README.md), the
+language model running locally, and, when its owner turns filing on, files
+new volumes into it. It runs inside [Olympus](../README.md), the
 terminal home for this repository's agents, as an installed agent type.
 
 Named for Clio, the Muse of history — conventionally depicted holding the
 scrolls, which is roughly the job.
 
-> **Status:** the first read-only local MVP is implemented. Ingest remains a
-> future capability and is deliberately absent from the model's tool surface.
+> **Status:** catalog questions and folder filing are implemented. Filing is
+> off unless turned on per agent, and ingest stays absent from the model's
+> tool surface either way: the user approves every volume on a review board.
 
 ## What it is for
 
@@ -29,11 +31,12 @@ Answered from metadata Nineveh has already fetched and an administrator has
 already reviewed. Cleo never calls MangaBaka itself: no rate-limit budget is
 spent, and the answer matches what the catalog shows.
 
-**Future: "I have this file — put it where it belongs."**
-Cleo works out which series a downloaded volume belongs to, proposes a
-filename consistent with the ones already there (`vinland_saga_v12.cbz` →
-`Vinland Saga 012.cbz`), and shows exactly where it would land. It is placed
-only after that proposal is accepted.
+**"I have these files — put them where they belong."**
+Cleo works out which series each downloaded volume belongs to, shows the
+filename Nineveh proposes to match the ones already there
+(`vinland_saga_v12.cbz` → `Vinland Saga 012.cbz`) and exactly where it would
+land, and warns about a volume the library already holds. A volume is placed
+only after you approve it. See [Filing volumes](#filing-volumes).
 
 The front end is Olympus: a local, full-screen terminal application shared by
 every agent. A remote front end over Tailscale remains a later step.
@@ -66,10 +69,9 @@ The division with Nineveh is not a matter of taste:
   explicit set of capabilities and may be restricted to particular libraries.
   A request outside that grant is refused with `403` no matter what the model
   was persuaded to attempt. Cleo cannot widen its own access.
-- **The current Cleo cannot write through Nineveh.** Its tool registry contains
-  no ingest operation, and its token should have no ingest capability. The
-  broader vendored contract includes discarding a staged ingest, but that route
-  is never exposed to this librarian.
+- **The model cannot write through Nineveh.** Its tool registry contains no
+  ingest operation. Filing is trusted interface code that acts only on what
+  the user approves, and only for an agent whose owner turned it on.
 - **Nineveh records what happened.** Every read, proposal, placement and
   refusal is logged with the capabilities in force at the time, visible under
   **Admin → Librarian**. Cleo is auditable from the outside rather than on its
@@ -84,14 +86,15 @@ The division with Nineveh is not a matter of taste:
 | `ingest:stage` | Validate and stage a volume — writes nothing to the library |
 | `ingest:commit` | Place a staged volume on disk |
 
-Each Cleo instance's token should carry only `catalog:read` and
+A Cleo that only answers questions needs only `catalog:read` and
 `metadata:read`. Its compiled tool registry contains four operations: list
 libraries, search series by name, find series by author, and read one series.
-The ingest operations in the vendored contract are not loaded dynamically and
-cannot be selected by the model.
+With filing on, a fifth tool lets the model *offer* the filing board for a
+folder; it touches no file and no service. The ingest operations are never
+model tools.
 
-For the future ingest workflow, staging and placing are **separate
-capabilities**. The intended deployment uses two tokens:
+For filing, staging and placing are **separate capabilities**. The intended
+deployment uses two tokens:
 
 - **the phone** — `catalog:read`, `metadata:read`, `ingest:stage`
 - **the desk** — the same, plus `ingest:commit`
@@ -158,9 +161,11 @@ libraries with differently scoped credentials. The standalone app's
 The runtime settings object redacts the token from `repr()`, so it never
 reaches a traceback or log line.
 
-**Grant only what the deployment needs.** This iteration needs only
-`catalog:read` and `metadata:read`. Omitting both ingest capabilities makes
-Nineveh independently enforce the same read-only boundary as Cleo.
+**Grant only what the deployment needs.** Answering questions needs only
+`catalog:read` and `metadata:read`; omitting both ingest capabilities makes
+Nineveh independently enforce the same read-only boundary as Cleo. Add
+`ingest:stage`, and `ingest:commit` where volumes should be placed, only for a
+Cleo with filing turned on.
 
 ## Using Cleo in Olympus
 
@@ -187,6 +192,7 @@ Local slash commands are parsed by Olympus before input reaches the model:
 /style compact|detailed    choose the default answer depth
 /export [ID]               write a new Markdown transcript
 /clear [ID|all]            clear history after confirmation
+/file [FOLDER]             file volumes from a folder (filing on)
 /help                      show command help
 ```
 
@@ -213,6 +219,52 @@ something that would otherwise act on it:
   downloaded volumes; an escape sequence in one is removed, never executed,
   and leaves no `[31m` behind. A sequence split across streamed model tokens
   is held back until complete rather than shown in pieces.
+
+## Filing volumes
+
+Turn on **Allow filing volumes from a folder** when adding or editing a Cleo
+(`Ctrl+A`). **Test connection** then also checks that the token may stage
+uploads. The identity bar reads *filing on*.
+
+Start with `Ctrl+O`, `/file ~/Downloads`, or by asking ("file the volumes in my
+downloads"), which makes Cleo offer a button; the model only suggests the
+folder, and nothing starts until you press it. In the folder picker choose a
+folder, and whether to include subfolders.
+
+For each `.cbz` in the folder, Cleo:
+
+1. **Matches a series**, cheapest evidence first: the archive's own
+   `ComicInfo.xml`, then the cleaned-up filename
+   (`[Digital] Vinland.Saga.v14 (2024).cbz` → *Vinland Saga*), each put to
+   Nineveh's title search. Only if both fail is the local model asked for a
+   better search term. Nineveh decides the match; when it cannot, the volume
+   is marked *need you* and you pick the series, with search.
+2. **Stages it**: uploads it, two at a time with progress, to Nineveh's
+   holding area. Staging writes nothing to the library. Nineveh answers with
+   the exact destination, its proposed filename, the naming pattern it
+   followed, and any duplicate.
+3. **Waits for you.** On the board, `Enter` places the highlighted volume,
+   `r` renames it first, `c` picks another series, `s` skips it, and `A`
+   places every ready volume that has no duplicate warning.
+
+Skipping a volume, or leaving the board with volumes undecided, withdraws
+their uploads. An upload still in progress when you leave is stopped if
+Nineveh has not received the whole file, so nothing is staged; if it has, the
+upload is withdrawn as soon as Nineveh finishes checking it. Quitting Olympus
+withdraws undecided uploads too, after waiting up to five seconds for any
+Nineveh is still checking; one that takes longer stays in Nineveh's queue
+until its 24-hour cleanup removes it. If the token may stage but not place
+(`ingest:commit`), the volume is marked *awaiting approval* and stays in
+Nineveh's queue for a desk token to place. When you leave, a summary is filed
+in the conversation with Nineveh's records as evidence.
+
+The files Cleo reads are only the `.cbz` files in the folder you chose: it
+lists rather than searches, skips hidden entries, never follows a symbolic
+link, and opens each upload without following links either. A volume over
+4 GB or an empty file is shown as failed and can only be skipped; it is never
+uploaded, even if you try to pick a series for it. One review covers at most
+1,000 volumes from at most 2,000 folders; the folder picker and the board say
+so when a folder holds more, so review the rest from a narrower folder.
 
 Catalog facts must come from a Nineveh read *in the current conversation*. A
 follow-up may reuse what an earlier answer already established — asking "who
@@ -264,8 +316,16 @@ evidence, `saga` for the numbered pick list, `urasawa` for an author search,
 `libraries` for the library listing, `slow` for a reply you can cancel with
 Esc (or leave running while you switch agents), `berserk` for a Nineveh `403`,
 `delete` for a refused tool call, `broken`, `crash` and `garbled` for Ollama
-failures, `markdown` for rich formatting, and `ansi` for escape-code
-stripping. Anything else gets the no-lookup refusal.
+failures, `markdown` for rich formatting, `ansi` for escape-code stripping,
+and `file the` for the filing-board offer. Anything else gets the no-lookup
+refusal.
+
+The harness's Cleo has filing on, and the fake Nineveh accepts uploads.
+`scripts/scenarios/inbox` holds tiny volumes that cover every case on the
+board: confident matches, a messy filename, a `ComicInfo.xml` match, a model
+guess, two duplicates (one in a subfolder), an ambiguous title, an unknown
+one, and an upload Nineveh refuses. From the repository root, type
+`/file cleo/scripts/scenarios/inbox`.
 
 Run it without `--launch` to see each request logged as it arrives, and point
 Olympus at it from another terminal using the command it prints. A different
@@ -276,7 +336,7 @@ the top of the script.
 contracts/    the vendored API slice and its provenance
 doc/          the getting-started guide
 scripts/      re-vendoring, and fake backends for trying the TUI
-src/cleo/     agent loop, read-only adapters, tools, and the Olympus provider
+src/cleo/     agent loop, adapters, tools, filing, and the Olympus provider
 tests/        unit, adapter, provider, and contract tests
 ```
 
@@ -302,12 +362,16 @@ imports the other project's source. Recreate it, then confirm:
   four clearly named model tools. The model supplies search fields or a series
   ID, never a method, host, or URL. When Nineveh explains a refusal, that
   explanation is passed through rather than flattened to a status code.
+- **Filing:** a separate ingest adapter (stage, commit, withdraw), a folder
+  inbox, a series matcher, and a per-volume state machine behind Olympus's
+  review board. Built only for an agent with filing on.
 - **Provider:** validates the Nineveh URL and token, probes Nineveh and Ollama
-  on request, and opens one runtime per configured instance.
+  (and, with filing on, the right to stage) on request, and opens one runtime
+  per configured instance.
 - **Persistence and interface:** owned by Olympus — per-agent searchable
   transcripts, resumption, explicit clearing, preferences, and Markdown export.
   An answer is filed against the conversation it was asked in, even if you
   have moved on to another conversation or agent before it finished.
 
-Ollama and Nineveh are the only network peers. Remote access and the future
-ingest workflow are intentionally outside this iteration.
+Ollama and Nineveh are the only network peers. Remote access remains outside
+this iteration.

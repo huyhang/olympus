@@ -5,8 +5,9 @@ interface, agent configuration, credentials, conversation history, and runtime
 lifecycle; each installed agent contributes only its capabilities and the
 settings it needs.
 
-The first installed agent is **Cleo**, a read-only librarian for a Nineveh
-catalog (see [`cleo/README.md`](cleo/README.md)).
+The first installed agent is **Cleo**, a librarian for a Nineveh catalog
+that answers questions and, when you allow it, files new volumes (see
+[`cleo/README.md`](cleo/README.md)).
 
 ## Install on macOS
 
@@ -65,6 +66,7 @@ streaming in the background: switch back to watch it finish, or wait for the
 | `Ctrl+A` | manage agents: add, edit, remove, restore, defaults |
 | `Ctrl+N` / `Ctrl+R` | new conversation / conversation history |
 | `Ctrl+S` | name, persona, and answer style of the current agent |
+| `Ctrl+O` | review the agent's proposals for a folder's files |
 | `Ctrl+B` | show or hide the sidebar (hidden below 88 columns) |
 | `Ctrl+↑` / `Ctrl+↓` | recall earlier input |
 | `Ctrl+Q` | quit |
@@ -76,7 +78,31 @@ there. Likewise `Ctrl+H` opens history only where the terminal sends it as
 its own key rather than as Backspace.
 
 Type `/help` for local commands such as `/agent 2`, `/history vinland`,
-`/export`, and `/clear`. They are handled by Olympus and never reach an agent.
+`/export`, `/file`, and `/clear`. They are handled by Olympus and never reach
+an agent.
+
+## Reviewing a folder
+
+An agent that can act on files, such as a Cleo with filing turned on, offers
+a review board. Open it with `Ctrl+O`, `/file FOLDER`, the `Ctrl+K` palette,
+or the button the agent shows when you ask in chat. Pick a folder (with path
+completion and a folder tree), and the agent turns each file into a proposal
+while you watch.
+
+The board lists every file with its state, shows the highlighted one in
+detail, and keeps a running tally. Nothing happens to a file until you decide:
+
+| Key | Action |
+|---|---|
+| `Enter` | carry out the highlighted proposal |
+| `s` | skip it |
+| `c` | choose a different target, with search |
+| `r` | rename before carrying it out |
+| `A` | carry out every proposal that is ready and has nothing to check |
+| `Esc` | finish; undecided proposals are withdrawn, even mid-upload |
+
+When you leave, Olympus files a summary in the conversation you started from,
+with the agent's records attached as evidence, so history and export keep it.
 
 ## Where things live
 
