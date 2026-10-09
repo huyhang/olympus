@@ -21,7 +21,10 @@ A scenario is one JSON file (see `scenarios/demo.json`):
   may carry an `error` (`status`, `detail`) that its detail read, and any
   upload to it, returns.
 - `ingest`: optional; `{"commit": false}` makes placing refused with `403`,
-  as for a token with `ingest:stage` but not `ingest:commit`.
+  as for a token with `ingest:stage` but not `ingest:commit`. `"queued"`
+  lists uploads already waiting when the fakes start, as if staged earlier or
+  from a phone: each names a `seriesId`, a `filename`, and the `file` (relative
+  to the scenario) whose bytes were uploaded.
 - `rules`: tried in order, first match wins. `match` is a keyword or a list of
   them, compared case-insensitively. Put specific rules before general ones.
 - `fallback`: the steps for a message no rule matches.
@@ -91,20 +94,26 @@ INGEST_PATH = re.compile(r"^/ingest/([^/]+)(/commit)?$")
 class Scenario:
     """The catalog the fake Nineveh serves and the script the fake model plays."""
 
-    def __init__(self, document: dict[str, Any]) -> None:
+    def __init__(self, document: dict[str, Any], base: Path = HERE) -> None:
         self.libraries: list[dict[str, Any]] = document.get("libraries", [])
         self.series = {entry["seriesId"]: entry for entry in document.get("series", [])}
         self.rules: list[dict[str, Any]] = document.get("rules", [])
         self.fallback: list[dict[str, Any]] = document.get(
             "fallback", [{"reply": "(fake Ollama: no rule matched that message.)"}]
         )
-        self.allow_commit: bool = document.get("ingest", {}).get("commit", True)
+        ingest = document.get("ingest", {})
+        self.allow_commit: bool = ingest.get("commit", True)
         self.staged: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        for entry in ingest.get("queued", []):
+            data = (base / entry["file"]).read_bytes()
+            status, record = self.stage(entry["seriesId"], entry["filename"], data)
+            if status != 201:
+                raise ValueError(f"queued upload {entry['filename']!r}: {record}")
 
     @classmethod
     def load(cls, path: Path) -> Scenario:
-        return cls(json.loads(path.read_text(encoding="utf-8")))
+        return cls(json.loads(path.read_text(encoding="utf-8")), path.parent)
 
     # --- the model ------------------------------------------------------------
 

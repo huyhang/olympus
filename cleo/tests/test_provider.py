@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 
 import pytest
 from cleo.config import CleoSettings
@@ -125,9 +126,29 @@ def filing_profile(url: str, filing: str = TOGGLE_ON) -> AgentProfile:
     )
 
 
-def test_filing_is_an_opt_in_toggle():
-    field = next(f for f in CleoProvider().definition.fields if f.key == "filing")
-    assert (field.kind, field.default, field.required) == ("toggle", TOGGLE_OFF, False)
+@pytest.mark.parametrize(
+    ("key", "default"), [("filing", TOGGLE_OFF), ("upload_up_front", TOGGLE_ON)]
+)
+def test_filing_settings_are_optional_toggles(key, default):
+    field = next(f for f in CleoProvider().definition.fields if f.key == key)
+    assert (field.kind, field.default, field.required) == ("toggle", default, False)
+
+
+@pytest.mark.parametrize(
+    ("settings", "upfront"),
+    [
+        ({}, True),
+        ({"upload_up_front": TOGGLE_ON}, True),
+        ({"upload_up_front": TOGGLE_OFF}, False),
+    ],
+)
+def test_a_filing_cleo_uploads_up_front_unless_told_not_to(backend, settings, upfront):
+    profile = filing_profile(backend.url)
+    profile = replace(profile, settings={**profile.settings, **settings})
+    stored = DictSecrets({("cleo-files", "nineveh_token"): "nvh_fake"})
+    runtime = CleoProvider().open(profile, stored, OllamaDefaults(backend.url, "fake"))
+    assert runtime.workflow._upfront is upfront
+    asyncio.run(_close(runtime))
 
 
 def test_a_filing_cleo_opens_with_the_filing_board(backend):

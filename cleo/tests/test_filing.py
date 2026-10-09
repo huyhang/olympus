@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,10 @@ from cleo.domain import MatchResult, SeriesOption
 from cleo.filing import (
     CHECKING,
     HELD,
+    LEFT,
+    PLANNED,
+    RECOVERING,
+    WITHDRAWN,
     FilingServices,
     FilingWorkflow,
     checked_filename,
@@ -61,13 +66,14 @@ def run(awaitable, timeout=10):
     return asyncio.run(asyncio.wait_for(awaitable, timeout))
 
 
-def review_for(files, ingest=None, finder=FINDER, problems=None):
+def review_for(files, ingest=None, finder=FINDER, problems=None, upfront=True):
     inbox = MemoryInbox(
         {name: (b"PK" + name.encode(), None) for name in files}, problems
     )
     ingest = ingest or RecordingIngest()
     seen: list[Proposal] = []
-    workflow = FilingWorkflow(FilingServices(inbox, finder, ingest), slots=2)
+    services = FilingServices(inbox, finder, ingest)
+    workflow = FilingWorkflow(services, slots=2, upfront=upfront)
     session = workflow.open(FOLDER, False, seen.append)
     return workflow, session, ingest, seen
 
@@ -592,3 +598,326 @@ def test_a_sensible_rename_is_accepted(filename, suggested, accepted):
 def test_a_rename_is_held_to_what_a_filename_can_be(filename, suggested, refusal):
     with pytest.raises(ReviewError, match=refusal):
         checked_filename(filename, suggested)
+
+
+# -- Nineveh's queue -------------------------------------------------------------
+
+
+def queued(ingest_id, name, series="pluto", data=None, **extra):
+    """A staged upload as Nineveh lists it; its content defaults to the file's."""
+    data = b"PK" + name.encode() if data is None else data
+    title = series.title()
+    return {
+        "ingestId": ingest_id,
+        "state": "staged",
+        "seriesId": series,
+        "filename": name,
+        "suggestedFilename": f"{title} 010.cbz",
+        "targetPath": f"Manga/{title}/{title} 010.cbz",
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "pageCount": 3,
+        "duplicateOf": None,
+        "createdAt": "2026-10-08T21:30:00+00:00",
+        **extra,
+    }
+
+
+def test_a_file_nineveh_already_holds_is_taken_over_not_sent_again():
+    ingest = RecordingIngest(
+        queue=[
+            queued("old-1", "pluto_v1.cbz"),
+            queued("old-2", "phone_v10.cbz", data=b"sent from the phone"),
+        ]
+    )
+    session, _, seen = session_for(["pluto_v1.cbz", "pluto_v2.cbz"], ingest)
+    run(session.run())
+    held = latest(seen, "pluto_v1.cbz")
+    assert (held.state, held.carried_over, held.retryable) == ("ready", True, True)
+    assert held.subject == Candidate("pluto", "Pluto")
+    assert held.subject_note.endswith("waiting in Nineveh's queue")
+    phone = latest(seen, "queue:old-2")
+    assert (phone.source, phone.state, phone.destination) == (
+        "phone_v10.cbz",
+        "ready",
+        "Manga/Pluto",
+    )
+    assert (phone.carried_over, phone.retryable) == (True, False)
+    assert ingest.calls == [("stage", "pluto", "pluto_v2.cbz")]
+
+
+def test_an_unreadable_file_is_never_mistaken_for_a_queued_upload():
+    record = queued("old-1", "unreadable_v1.cbz")
+    ingest = RecordingIngest(queue=[record])
+    finder = TableFinder({"unreadable": MatchResult(PLUTO, (), "from the filename")})
+    session, _, seen = session_for(["unreadable_v1.cbz"], ingest, finder)
+    run(session.run())
+    assert latest(seen, "unreadable_v1.cbz").state == "failed"
+    assert latest(seen, "queue:old-1").carried_over
+
+
+def test_uploads_from_before_the_review_stay_unless_withdrawn():
+    ingest = RecordingIngest(
+        queue=[queued(f"old-{n}", f"{n}.cbz", data=str(n).encode()) for n in (1, 2, 3)]
+    )
+    session, _, seen = session_for([], ingest)
+
+    async def exercise():
+        await session.run()
+        await session.skip("queue:old-1")
+        await session.withdraw("queue:old-2")
+        await session.close()
+
+    run(exercise())
+    assert discards(ingest) == [("discard", "old-2")]
+    left, withdrawn = latest(seen, "queue:old-1"), latest(seen, "queue:old-2")
+    assert (left.state, left.activity) == ("skipped", LEFT)
+    assert (withdrawn.state, withdrawn.activity) == ("skipped", WITHDRAWN)
+
+
+def test_an_upload_from_before_the_review_can_be_placed():
+    ingest = RecordingIngest(queue=[queued("old-1", "phone.cbz", data=b"x")])
+    session, _, seen = session_for([], ingest)
+
+    async def exercise():
+        await session.run()
+        await session.place("queue:old-1")
+
+    run(exercise())
+    assert ("commit", "old-1", None) in ingest.calls
+    assert latest(seen, "queue:old-1").state == "placed"
+
+
+@pytest.mark.parametrize(
+    ("action", "proposal_id", "message"),
+    [
+        ("withdraw", "pluto_v1.cbz", "Only an upload from before this review"),
+        ("choose", "queue:old-1", "no file in this folder to send again"),
+    ],
+)
+def test_what_does_not_apply_to_an_upload_is_refused(action, proposal_id, message):
+    ingest = RecordingIngest(queue=[queued("old-1", "phone.cbz", data=b"x")])
+    session, _, _ = session_for(["pluto_v1.cbz"], ingest)
+
+    async def exercise():
+        await session.run()
+        arguments = (Candidate("saga", "Saga"),) if action == "choose" else ()
+        await getattr(session, action)(proposal_id, *arguments)
+
+    with pytest.raises(ReviewError, match=message):
+        run(exercise())
+
+
+def test_an_upload_nineveh_will_not_withdraw_stays_ready():
+    ingest = RecordingIngest(queue=[queued("old-1", "phone.cbz", data=b"x")])
+    session, _, seen = session_for([], ingest)
+
+    async def exercise():
+        await session.run()
+        ingest.refuse["discard"] = IngestError("Nineveh is unavailable.")
+        await session.withdraw("queue:old-1")
+
+    run(exercise())
+    stuck = latest(seen, "queue:old-1")
+    assert (stuck.state, stuck.activity) == ("ready", "Nineveh would not withdraw it.")
+
+
+def test_choosing_another_series_replaces_the_upload_nineveh_held():
+    ingest = RecordingIngest(queue=[queued("old-1", "pluto_v1.cbz")])
+    session, _, seen = session_for(["pluto_v1.cbz"], ingest)
+
+    async def exercise():
+        await session.run()
+        await session.choose("pluto_v1.cbz", Candidate("saga", "Saga"))
+
+    run(exercise())
+    chosen = latest(seen, "pluto_v1.cbz")
+    assert (chosen.state, chosen.carried_over, chosen.subject.id) == (
+        "ready",
+        False,
+        "saga",
+    )
+    assert ingest.calls == [("discard", "old-1"), ("stage", "saga", "pluto_v1.cbz")]
+
+
+def test_a_queue_nineveh_will_not_show_is_reported_and_filing_goes_on():
+    ingest = RecordingIngest({"pending": IngestError("Nineveh is unavailable.")})
+    session, _, seen = session_for(["pluto_v1.cbz"], ingest)
+    assert (
+        run(session.run()) == "Could not check Nineveh's queue: Nineveh is unavailable."
+    )
+    assert latest(seen, "pluto_v1.cbz").state == "ready"
+
+
+# -- the model's suggestion --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("suggestion", "titles"),
+    [
+        (
+            VINLAND,
+            [
+                "Vinland Saga — Manga · 12 volumes · suggested",
+                "Saga — Comics · 10 volumes",
+            ],
+        ),
+        (None, ["Vinland Saga — Manga · 12 volumes", "Saga — Comics · 10 volumes"]),
+    ],
+)
+def test_a_suggestion_is_offered_first_and_never_acted_on(suggestion, titles):
+    finder = TableFinder(
+        {"saga": MatchResult(None, (VINLAND, SAGA), "Several.", suggestion)}
+    )
+    session, ingest, seen = session_for(["saga_v11.cbz"], finder=finder)
+    run(session.run())
+    proposal = latest(seen, "saga_v11.cbz")
+    assert proposal.state == "needs_choice"
+    assert proposal.suggestion == (suggestion.subject if suggestion else None)
+    assert [item.title for item in proposal.alternatives] == titles
+    assert ingest.calls == []
+
+
+# -- uploading on demand -----------------------------------------------------------
+
+
+def test_on_demand_a_matched_volume_waits_until_the_user_turns_to_it():
+    _, session, ingest, seen = review_for(
+        ["pluto_v1.cbz", "saga_v11.cbz"], upfront=False
+    )
+
+    async def exercise():
+        await session.run()
+        planned = latest(seen, "pluto_v1.cbz")
+        assert (planned.state, planned.activity) == ("planned", PLANNED)
+        assert planned.subject == Candidate("pluto", "Pluto")
+        assert ingest.calls == []
+        await asyncio.gather(
+            session.prepare("pluto_v1.cbz"), session.prepare("pluto_v1.cbz")
+        )
+        await session.prepare("saga_v11.cbz")
+        await session.prepare("gone.cbz")
+
+    run(exercise())
+    assert ingest.calls == [("stage", "pluto", "pluto_v1.cbz")]
+    assert latest(seen, "pluto_v1.cbz").state == "ready"
+
+
+def test_on_demand_a_volume_waiting_for_a_slot_is_uploaded_once():
+    ingest = GatedIngest(0.5)
+    inbox = MemoryInbox(
+        {name: (b"PK", None) for name in ("pluto_a.cbz", "pluto_b.cbz")}
+    )
+    services = FilingServices(inbox, FINDER, ingest)
+    session = FilingWorkflow(services, slots=1, upfront=False).open(
+        FOLDER, False, lambda proposal: None
+    )
+
+    async def exercise():
+        await session.run()
+        first = asyncio.create_task(session.prepare("pluto_a.cbz"))
+        await ingest.sending.wait()  # the only slot is now busy
+        waiting = [asyncio.create_task(session.prepare("pluto_b.cbz")) for _ in "ab"]
+        await asyncio.sleep(0)
+        ingest.answer.set()
+        await asyncio.gather(first, *waiting)
+
+    run(exercise())
+    uploads = [call for call in ingest.calls if call[0] == "stage"]
+    assert [call[2] for call in uploads] == ["pluto_a.cbz", "pluto_b.cbz"]
+
+
+class DuplicateIngest(RecordingIngest):
+    async def stage(self, series_id, filename, content, progress=None):
+        staged = await super().stage(series_id, filename, content, progress)
+        return {**staged, "duplicateOf": {"filename": "Pluto 001.cbz"}}
+
+
+@pytest.mark.parametrize(
+    ("ingest", "state", "committed"),
+    [(RecordingIngest(), "placed", True), (DuplicateIngest(), "ready", False)],
+)
+def test_on_demand_placing_uploads_first_and_stops_for_a_duplicate(
+    ingest, state, committed
+):
+    _, session, _, seen = review_for(["pluto_v1.cbz"], ingest, upfront=False)
+
+    async def exercise():
+        await session.run()
+        await session.place("pluto_v1.cbz")
+
+    run(exercise())
+    assert latest(seen, "pluto_v1.cbz").state == state
+    assert any(call[0] == "commit" for call in ingest.calls) is committed
+    assert ingest.calls[0] == ("stage", "pluto", "pluto_v1.cbz")
+
+
+# -- an answer that never arrived --------------------------------------------------
+
+
+TIMEOUT = IngestError("Nineveh did not respond in time.")
+
+
+class LostAnswerIngest(RecordingIngest):
+    """Takes the file, loses Nineveh's answer, and lists the upload in its
+    queue from the `shows_on`-th lookup (never, when None)."""
+
+    def __init__(self, error, whole=True, shows_on=1, failing=0):
+        super().__init__()
+        self.error, self.whole, self.shows_on = error, whole, shows_on
+        self.failing = failing
+        self.late = None
+        self.lookups = 0
+
+    async def stage(self, series_id, filename, content, progress=None):
+        self.calls.append(("stage", series_id, filename))
+        data = content.read() if self.whole else content.read(1)
+        self.late = queued("late-1", filename, series_id, data)
+        raise self.error
+
+    async def pending(self):
+        answer = await super().pending()
+        if self.late is not None:
+            self.lookups += 1
+            if self.lookups <= self.failing:
+                raise IngestError("Nineveh is unavailable.")
+            if self.shows_on is not None and self.lookups >= self.shows_on:
+                answer["pending"].append(self.late)
+        return answer
+
+
+@pytest.mark.parametrize(
+    ("error", "whole", "shows_on", "state", "lookups"),
+    [
+        (TIMEOUT, True, 1, "ready", 1),
+        (TIMEOUT, True, 3, "ready", 3),
+        (TIMEOUT, True, None, "failed", 3),
+        # The first lookup itself fails; the next one finds it.
+        ((TIMEOUT, 1), True, 2, "ready", 2),
+        (
+            IngestError("Nineveh could not accept that volume.", 422),
+            True,
+            1,
+            "failed",
+            0,
+        ),
+        (TIMEOUT, False, 1, "failed", 0),
+    ],
+)
+def test_an_upload_whose_answer_was_lost_is_found_in_the_queue(
+    monkeypatch, error, whole, shows_on, state, lookups
+):
+    monkeypatch.setattr(filing, "RECOVERY_DELAY", 0)
+    error, failing = error if isinstance(error, tuple) else (error, 0)
+    ingest = LostAnswerIngest(error, whole, shows_on, failing)
+    session, _, seen = session_for(["pluto_v1.cbz"], ingest)
+    run(session.run())
+    proposal = latest(seen, "pluto_v1.cbz")
+    assert (proposal.state, ingest.lookups) == (state, lookups)
+    looked = RECOVERING in [item.activity for item in seen]
+    assert looked is (lookups > 0)
+    if state == "ready":
+        assert session._items["pluto_v1.cbz"].ingest_id == "late-1"
+        assert not proposal.carried_over
+    else:
+        assert proposal.activity == str(error)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,16 @@ READY = Proposal(
     pattern="Vinland Saga NNN.cbz",
 )
 WARNED = Proposal("b", "b.cbz", "ready", warning="Already in the library")
+CARRIED = Proposal(
+    "queue:1",
+    "phone.cbz",
+    "ready",
+    subject=Candidate("p", "Pluto"),
+    destination="Manga/Pluto",
+    filename="Pluto 010.cbz",
+    carried_over=True,
+    retryable=False,
+)
 
 
 def rendered(renderable) -> str:
@@ -36,9 +47,12 @@ def rendered(renderable) -> str:
     [
         (Proposal("x", "x", "pending"), "◌"),
         (Proposal("x", "x", "working"), "◐"),
+        (Proposal("x", "x", "planned"), "○"),
         (Proposal("x", "x", "needs_choice"), "?"),
         (READY, "●"),
         (WARNED, "⚠"),
+        (CARRIED, "◆"),
+        (replace(CARRIED, warning="Duplicate"), "⚠"),
         (Proposal("x", "x", "placed"), "✓"),
         (Proposal("x", "x", "held"), "⏸"),
         (Proposal("x", "x", "skipped"), "–"),
@@ -53,20 +67,25 @@ def test_the_tally_counts_in_display_order_and_skips_zeroes():
     proposals = [
         READY,
         WARNED,
+        CARRIED,
         Proposal("c", "c", "pending"),
         Proposal("d", "d", "placing"),
         Proposal("e", "e", "placed"),
         Proposal("f", "f", "needs_choice"),
+        Proposal("g", "g", "planned"),
     ]
     assert view.tally(proposals) == [
         ("placed", 1),
         ("ready", 1),
+        ("planned", 1),
         ("to check", 1),
+        ("from earlier", 1),
         ("need you", 1),
         ("in progress", 2),
     ]
     assert view.tally_text(proposals).plain == (
-        "6 files   1 placed   1 ready   1 to check   1 need you   2 in progress"
+        "8 files   1 placed   1 ready   1 planned   1 to check   1 from earlier"
+        "   1 need you   2 in progress"
     )
     assert view.tally_text([READY]).plain == "1 file   1 ready"
 
@@ -80,6 +99,13 @@ def test_the_tally_counts_in_display_order_and_skips_zeroes():
             "◐ x.cbz  Uploading 40%",
         ),
         (Proposal("x", "x.cbz", "needs_choice"), "? x.cbz  choose a series"),
+        (
+            Proposal("x", "x.cbz", "needs_choice", suggestion=Candidate("s", "Saga")),
+            "? x.cbz  suggested: Saga",
+        ),
+        # The tally counts planned files; the detail pane says what happens next.
+        (Proposal("x", "x.cbz", "planned", activity="Uploads later"), "○ x.cbz"),
+        (CARRIED, "◆ phone.cbz  from earlier"),
         (
             Proposal("x", "\x1b[31mx.cbz", "failed", activity="Refused"),
             "✗ x.cbz  Refused",
@@ -100,6 +126,9 @@ def test_a_row_names_the_file_and_what_is_happening(proposal, row):
         ("failed", True, "choose", True),
         ("failed", False, "choose", False),
         ("failed", False, "skip", True),
+        ("planned", True, "place", True),
+        ("planned", True, "choose", True),
+        ("planned", True, "rename", False),
         ("pending", True, "skip", True),
         ("working", True, "skip", False),
         ("placed", True, "skip", False),
@@ -110,13 +139,28 @@ def test_actions_follow_the_state(state, retryable, action, expected):
     assert view.allowed(proposal, action) is expected
 
 
+@pytest.mark.parametrize(
+    ("proposal", "expected"),
+    [
+        (CARRIED, True),
+        (READY, False),
+        (replace(CARRIED, state="placed"), False),
+        (replace(CARRIED, state="skipped"), False),
+    ],
+)
+def test_only_an_upload_from_before_the_review_can_be_withdrawn(proposal, expected):
+    assert view.allowed(proposal, "withdraw") is expected
+
+
 def test_no_action_applies_to_nothing():
     assert not view.allowed(None, "place")
 
 
-def test_place_all_skips_warnings_and_unready_volumes():
-    assert view.placeable([READY, WARNED, Proposal("c", "c", "placed")]) == ["a"]
-    assert view.unsettled([READY, Proposal("c", "c", "placed")]) == 1
+def test_place_all_skips_warnings_unready_and_earlier_volumes():
+    planned = Proposal("p", "p", "planned")
+    proposals = [READY, WARNED, CARRIED, planned, Proposal("c", "c", "placed")]
+    assert view.placeable(proposals) == ["a", "p"]
+    assert view.unsettled(proposals) == 3
 
 
 @pytest.mark.parametrize(
@@ -175,6 +219,10 @@ def test_place_all_skips_warnings_and_unready_volumes():
             [("Check", "Duplicate"), ("Status", "Not placed: x")],
         ),
         (Proposal("g", "g.cbz", "working"), []),
+        (
+            Proposal("h", "h.cbz", "needs_choice", suggestion=Candidate("s", "Saga")),
+            [("Series", "Not sure — suggested: Saga. Press c to confirm")],
+        ),
     ],
 )
 def test_the_detail_pane_describes_the_proposal(proposal, rows):
@@ -196,12 +244,14 @@ def test_the_summary_records_every_outcome():
         Proposal("d", "d.cbz", "failed"),
         Proposal("e", "e.cbz", "skipped"),
         Proposal("f", "f.cbz", "ready"),
+        Proposal("g", "g.cbz", "skipped", activity="Withdrawn from the queue."),
+        CARRIED,
     ]
     summary = view.summary_markdown("File things", Path("/in"), proposals)
     assert summary.splitlines() == [
         "**File things** · `/in`",
         "",
-        "Placed 1 of 6 files.",
+        "Placed 1 of 8 files.",
         "",
         "- ✓ `a.cbz` → `Manga/X/X 001.cbz`",
         "- ⏸ `b.cbz` — uploaded, awaiting approval",
@@ -209,6 +259,8 @@ def test_the_summary_records_every_outcome():
         "- ✗ `d.cbz` — failed",
         "- – `e.cbz` — skipped",
         "- – `f.cbz` — left undecided; nothing was placed",
+        "- – `g.cbz` — Withdrawn from the queue.",
+        "- – `phone.cbz` — left waiting, as it was before",
     ]
     single = view.summary_markdown("T", Path("/in"), proposals[:1])
     assert "Placed 1 of 1 file." in single

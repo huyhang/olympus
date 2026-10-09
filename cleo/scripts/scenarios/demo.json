@@ -53,7 +53,14 @@
       }
     }
   ],
+  "ingest": {
+    "queued": [
+      {"seriesId": "vinland-saga", "filename": "Vinland_Saga_v13.cbz", "file": "inbox/Vinland_Saga_v13.cbz"},
+      {"seriesId": "vinland-saga", "filename": "vinland_saga_v15.cbz", "file": "phone/vinland_saga_v15.cbz"}
+    ]
+  },
   "rules": [
+    {"match": "file: saga_v11.cbz", "steps": [{"reply": "1"}]},
     {"match": "plt_", "steps": [{"reply": "Pluto"}]},
     {"match": "mystery_scan", "steps": [{"reply": "UNKNOWN"}]},
     {

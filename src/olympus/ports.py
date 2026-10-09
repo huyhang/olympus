@@ -130,9 +130,22 @@ class ReviewSession(Protocol):
         """
         ...
 
+    async def prepare(self, proposal_id: str) -> None:
+        """The user turned to a `planned` proposal: prepare it now.
+
+        A hint, not a command: it does nothing for any other proposal.
+        """
+        ...
+
     async def place(self, proposal_id: str) -> None: ...
 
-    async def skip(self, proposal_id: str) -> None: ...
+    async def skip(self, proposal_id: str) -> None:
+        """Set a proposal aside. A carried-over one stays as it was."""
+        ...
+
+    async def withdraw(self, proposal_id: str) -> None:
+        """Undo what was prepared for a carried-over proposal."""
+        ...
 
     async def rename(self, proposal_id: str, filename: str) -> None: ...
 
@@ -141,9 +154,10 @@ class ReviewSession(Protocol):
     async def search(self, query: str) -> tuple[Candidate, ...]: ...
 
     async def close(self) -> None:
-        """Withdraw whatever was prepared and not settled.
+        """Withdraw whatever this review prepared and did not settle.
 
         Work still in flight is stopped, or withdrawn as soon as it lands.
+        Carried-over proposals are left as they were.
         """
         ...
 

@@ -74,12 +74,14 @@ class AgentEvent:
     action: SuggestedAction | None = None
 
 
-# Where one proposal stands. `ready` waits for the user; `held` was prepared
+# Where one proposal stands. `planned` knows its target but is prepared only
+# when the user turns to it; `ready` waits for the user; `held` was prepared
 # but must be approved elsewhere; `placed`, `held`, `skipped`, and `failed`
 # are settled.
 ProposalState = Literal[
     "pending",
     "working",
+    "planned",
     "needs_choice",
     "ready",
     "placing",
@@ -99,6 +101,10 @@ class Proposal:
     from Olympus, so views pass it through `plain_text` before display.
     `retryable` is False for a file the agent will never act on, such as one
     too large to upload: choosing another target cannot help it.
+    `suggestion` is the agent's best guess when it would not decide; the board
+    offers it first and never acts on it. A `carried_over` proposal was
+    prepared before this review began, so leaving the review keeps it and only
+    an explicit withdrawal undoes it.
     """
 
     id: str
@@ -115,8 +121,10 @@ class Proposal:
     pattern: str = ""
     warning: str = ""
     alternatives: tuple[Candidate, ...] = ()
+    suggestion: Candidate | None = None
     evidence: tuple[Evidence, ...] = ()
     retryable: bool = True
+    carried_over: bool = False
 
     @property
     def settled(self) -> bool:

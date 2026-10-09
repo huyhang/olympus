@@ -166,6 +166,13 @@ board, or quitting Olympus, withdraws the uploads you did not decide on,
 including any still in progress, and leaving files a summary in the
 conversation.
 
+Uploads already waiting in Nineveh's queue, for example ones staged from a
+phone, are listed under *From before this review*: `Enter` places one, `w`
+withdraws it, and leaving keeps the rest. On a slow connection, turn off
+**Upload every volume as soon as the board opens** in the Cleo's settings;
+Cleo then uploads each volume only once you move to it on the board, or
+place it.
+
 ## Data and upgrades
 
 On macOS, persistent state lives in:

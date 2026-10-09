@@ -98,8 +98,17 @@ detail, and keeps a running tally. Nothing happens to a file until you decide:
 | `s` | skip it |
 | `c` | choose a different target, with search |
 | `r` | rename before carrying it out |
+| `w` | withdraw something prepared before this review |
 | `A` | carry out every proposal that is ready and has nothing to check |
 | `Esc` | finish; undecided proposals are withdrawn, even mid-upload |
+
+Work the agent prepared before this review, such as uploads still waiting in
+a service's queue, is listed under *From before this review*. It is decided
+one by one: `A` leaves it out, and leaving the board keeps it. An agent may
+also mark a file *planned*: its target is known, and it is prepared only once
+you move to it and stay there for a moment, or carry it out. When the agent is unsure, its
+best guess is shown as *suggested* and offered first; it is never acted on
+until you choose it.
 
 When you leave, Olympus files a summary in the conversation you started from,
 with the agent's records attached as evidence, so history and export keep it.

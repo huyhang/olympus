@@ -238,14 +238,36 @@ For each `.cbz` in the folder, Cleo:
    (`[Digital] Vinland.Saga.v14 (2024).cbz` → *Vinland Saga*), each put to
    Nineveh's title search. Only if both fail is the local model asked for a
    better search term. Nineveh decides the match; when it cannot, the volume
-   is marked *need you* and you pick the series, with search.
+   is marked *need you* and you pick the series, with search. If Nineveh
+   offered candidates without confirming one, the local model's pick among
+   them is shown as *suggested* and listed first in the picker, so `c` then
+   `Enter` accepts it. The suggestion is never acted on by itself.
 2. **Stages it**: uploads it, two at a time with progress, to Nineveh's
    holding area. Staging writes nothing to the library. Nineveh answers with
    the exact destination, its proposed filename, the naming pattern it
-   followed, and any duplicate.
+   followed, and any duplicate. If that answer is lost after the whole file
+   was sent (a timeout or a dropped connection), Cleo looks for the upload in
+   Nineveh's queue by its content before calling it failed, so a retry never
+   stages it twice.
 3. **Waits for you.** On the board, `Enter` places the highlighted volume,
    `r` renames it first, `c` picks another series, `s` skips it, and `A`
    places every ready volume that has no duplicate warning.
+
+**Upload every volume as soon as the board opens** (on by default, in the
+Cleo's settings) is what makes step 2 happen for every volume at once. Turn it
+off on a slow or metered connection: Cleo still matches every volume, marks
+it *planned*, and uploads it only once you move to it and stay there for a
+moment, or place it; opening the board uploads nothing. Placing a planned
+volume uploads it first and places it straight away, unless Nineveh reports a
+duplicate; then it stops so you can check.
+
+The board also lists uploads already waiting in Nineveh's queue: ones held
+for a desk token, ones left by an interrupted session, or ones sent from
+another device. A file in the folder that Nineveh already holds, recognised
+by its content, is taken over rather than uploaded again; the rest appear
+under *From before this review*. These are yours to decide one by one:
+`Enter` places one, `w` withdraws it from the queue, and `s` leaves it there.
+Leaving the board keeps them, and `A` leaves them out.
 
 Skipping a volume, or leaving the board with volumes undecided, withdraws
 their uploads. An upload still in progress when you leave is stopped if
@@ -323,9 +345,11 @@ refusal.
 The harness's Cleo has filing on, and the fake Nineveh accepts uploads.
 `scripts/scenarios/inbox` holds tiny volumes that cover every case on the
 board: confident matches, a messy filename, a `ComicInfo.xml` match, a model
-guess, two duplicates (one in a subfolder), an ambiguous title, an unknown
-one, and an upload Nineveh refuses. From the repository root, type
-`/file cleo/scripts/scenarios/inbox`.
+guess, two duplicates (one in a subfolder), an ambiguous title with a model
+suggestion, an unknown one, and an upload Nineveh refuses. The fake's queue
+starts with two uploads, as if sent earlier: one is `Vinland_Saga_v13.cbz`,
+which the board takes over, and one came from a phone. From the repository
+root, type `/file cleo/scripts/scenarios/inbox`.
 
 Run it without `--launch` to see each request logged as it arrives, and point
 Olympus at it from another terminal using the command it prints. A different

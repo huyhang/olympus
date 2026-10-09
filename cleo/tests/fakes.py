@@ -88,13 +88,18 @@ class MemoryInbox:
 class RecordingIngest:
     """Stages under predictable IDs; `refuse` maps a call to the IngestError it raises."""
 
-    def __init__(self, refuse=None):
+    def __init__(self, refuse=None, queue=None):
         self.calls = []
         self.refuse = refuse or {}
         self.counter = 0
+        self.queue = list(queue or [])
+        self.queue_checks = 0
 
     async def pending(self):
-        return {"pending": []}
+        """Nineveh's queue; counted apart from `calls`, which record changes."""
+        self.queue_checks += 1
+        self._maybe_refuse("pending", None)
+        return {"pending": list(self.queue)}
 
     async def stage(self, series_id, filename, content, progress=None):
         self.calls.append(("stage", series_id, filename))

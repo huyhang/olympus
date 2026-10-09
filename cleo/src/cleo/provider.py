@@ -11,7 +11,7 @@ from cleo.config import CleoSettings
 from cleo.filing import FilingServices, FilingWorkflow
 from cleo.inbox import FolderInbox
 from cleo.ingest import NinevehIngestClient
-from cleo.matcher import ModelTitleGuesser, SeriesMatcher
+from cleo.matcher import ModelRanker, ModelTitleGuesser, SeriesMatcher
 from cleo.nineveh import NinevehCatalogClient
 from cleo.ollama import OllamaChatModel
 from cleo.ports import CatalogError, IngestError
@@ -27,6 +27,10 @@ from olympus.domain import (
 )
 from olympus.ports import ProviderError, SecretStore
 from olympus.validation import http_url_problem
+
+# Whether a filing review uploads every matched volume at once, or each one
+# only when the user turns to it.
+UPFRONT = "upload_up_front"
 
 
 class CleoProvider:
@@ -58,6 +62,19 @@ class CleoProvider:
                         "and ingest:commit to place volumes from here."
                     ),
                     default=TOGGLE_OFF,
+                    required=False,
+                    kind="toggle",
+                ),
+                ConfigurationField(
+                    UPFRONT,
+                    "Upload every volume as soon as the board opens",
+                    placeholder=(
+                        "Shows Nineveh's destination and duplicate check for "
+                        "every volume at once. Turn off on slow or metered "
+                        "connections: Cleo then uploads a volume when you open "
+                        "or place it."
+                    ),
+                    default=TOGGLE_ON,
                     required=False,
                     kind="toggle",
                 ),
@@ -146,9 +163,10 @@ class CleoProvider:
             summary=self.definition.description,
             close_async=(model.aclose, catalog.aclose),
         )
-        return (
-            self._with_filing(runtime, settings, catalog, model) if filing else runtime
-        )
+        if not filing:
+            return runtime
+        upfront = profile.settings.get(UPFRONT, TOGGLE_ON) == TOGGLE_ON
+        return self._with_filing(runtime, settings, catalog, model, upfront)
 
     @staticmethod
     def _with_filing(
@@ -156,6 +174,7 @@ class CleoProvider:
         settings: CleoSettings,
         catalog: NinevehCatalogClient,
         model: OllamaChatModel,
+        upfront: bool,
     ) -> AgentRuntime:
         """The same runtime, plus the filing board and the ingest client it uses.
 
@@ -164,8 +183,12 @@ class CleoProvider:
         """
         ingest = NinevehIngestClient(settings)
         inbox = FolderInbox()
-        finder = SeriesMatcher(catalog, inbox, ModelTitleGuesser(model))
-        workflow = FilingWorkflow(FilingServices(inbox, finder, ingest))
+        finder = SeriesMatcher(
+            catalog, inbox, ModelTitleGuesser(model), ModelRanker(model)
+        )
+        workflow = FilingWorkflow(
+            FilingServices(inbox, finder, ingest), upfront=upfront
+        )
         return AgentRuntime(
             session=runtime.session,
             model=runtime.model,

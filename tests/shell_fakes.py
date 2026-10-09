@@ -147,6 +147,14 @@ class ScriptedReviewSession:
         self.actions.append(("skip", proposal_id))
         self._set(proposal_id, state="skipped")
 
+    async def withdraw(self, proposal_id):
+        self.actions.append(("withdraw", proposal_id))
+        self._set(proposal_id, state="skipped", activity="Withdrawn.")
+
+    async def prepare(self, proposal_id):
+        self.actions.append(("prepare", proposal_id))
+        self._set(proposal_id, state="ready", destination="Lib/Prepared")
+
     async def rename(self, proposal_id, filename):
         self.actions.append(("rename", proposal_id, filename))
         if filename == "bad":

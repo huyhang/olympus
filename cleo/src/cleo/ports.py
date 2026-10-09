@@ -82,6 +82,12 @@ class TitleGuesser(Protocol):
     async def guess(self, filename: str) -> str | None: ...
 
 
+class CandidateRanker(Protocol):
+    async def rank(
+        self, filename: str, titles: tuple[str, ...], options: tuple[SeriesOption, ...]
+    ) -> SeriesOption | None: ...
+
+
 class SeriesFinder(Protocol):
     async def match(self, volume: LocalVolume) -> MatchResult: ...
 

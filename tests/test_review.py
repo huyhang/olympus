@@ -22,8 +22,9 @@ from shell_fakes import (
 )
 from textual.widgets import Button, Input, ListView, Static, Switch
 
-from olympus.domain import Proposal
+from olympus.domain import Candidate, Proposal
 from olympus.ports import ReviewError
+from olympus.ui import review
 from olympus.ui.folders import FolderPickerScreen, FolderRequest
 from olympus.ui.review import RenameScreen, ReviewBoardScreen, SeriesPickerScreen
 from olympus.ui.screens import ConfirmScreen
@@ -515,5 +516,103 @@ def test_leaving_lets_a_placement_in_progress_finish(tmp_path):
             assert not isinstance(app.screen, ReviewBoardScreen)
             assert "✓ `a.cbz`" in transcript_text(app)
             assert provider.workflow.sessions[0][2].closed
+
+    asyncio.run(exercise())
+
+
+def queue_and_plan():
+    return (
+        Proposal("a.cbz", "a.cbz", "planned", subject=Candidate("s1", "Series One")),
+        Proposal("b.cbz", "b.cbz", "needs_choice"),
+        Proposal(
+            "queue:1",
+            "phone.cbz",
+            "ready",
+            subject=Candidate("s1", "Series One"),
+            subject_note="Manga · waiting in the queue",
+            destination="Manga/Series One",
+            filename="Series One 010.cbz",
+            carried_over=True,
+            retryable=False,
+        ),
+    )
+
+
+def test_an_upload_from_before_the_review_sits_apart_and_can_be_withdrawn(tmp_path):
+    app, _, provider, _ = with_workflow(tmp_path, ScriptedWorkflow(queue_and_plan()))
+
+    async def exercise():
+        async with app.run_test(size=SIZE) as pilot:
+            board = await open_board(app, pilot, tmp_path / "inbox")
+            session = provider.workflow.sessions[0][2]
+            files = board.query_one("#board-files", ListView)
+            labels = [str(row.query_one(Static).render()) for row in files.children]
+            assert labels[2] == "From before this review"
+            assert files.children[2].disabled
+            assert "1 from earlier" in tally_text(board)
+            await highlight(board, pilot, 3)
+            assert "waiting in the queue" in card_text(board)
+            assert not board.query_one("#board-withdraw", Button).disabled
+            assert board.query_one("#board-choose", Button).disabled
+            await pilot.press("w")
+            await until(pilot, lambda: ("withdraw", "queue:1") in session.actions)
+            await highlight(board, pilot, 1)
+            assert board.query_one("#board-withdraw", Button).disabled
+
+    asyncio.run(exercise())
+
+
+def test_a_planned_file_is_prepared_once_the_user_stays_on_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "DWELL", 0.05)
+    app, _, provider, _ = with_workflow(tmp_path, ScriptedWorkflow(queue_and_plan()))
+
+    async def exercise():
+        async with app.run_test(size=SIZE) as pilot:
+            board = await open_board(app, pilot, tmp_path / "inbox")
+            session = provider.workflow.sessions[0][2]
+            # Opening the board rests on the first file; that is not a choice.
+            await pilot.pause(0.2)
+            assert ("prepare", "a.cbz") not in session.actions
+            # Passing over the planned file starts nothing either.
+            await highlight(board, pilot, 1)
+            await highlight(board, pilot, 0)
+            await highlight(board, pilot, 1)
+            await pilot.pause(0.2)
+            assert ("prepare", "a.cbz") not in session.actions
+            await highlight(board, pilot, 0)
+            await until(pilot, lambda: ("prepare", "a.cbz") in session.actions)
+            await pilot.pause(0.2)
+            assert session.actions.count(("prepare", "a.cbz")) == 1
+            assert "Lib/Prepared" in card_text(board)
+
+    asyncio.run(exercise())
+
+
+def test_enter_places_a_planned_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "DWELL", 60)
+    app, _, provider, _ = with_workflow(tmp_path, ScriptedWorkflow(queue_and_plan()))
+
+    async def exercise():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_board(app, pilot, tmp_path / "inbox")
+            session = provider.workflow.sessions[0][2]
+            await pilot.press("enter")
+            await until(pilot, lambda: ("place", "a.cbz") in session.actions)
+
+    asyncio.run(exercise())
+
+
+def test_leaving_keeps_uploads_from_before_without_asking(tmp_path):
+    earlier = queue_and_plan()[2]
+    app, _, provider, _ = with_workflow(tmp_path, ScriptedWorkflow((earlier,)))
+
+    async def exercise():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_board(app, pilot, tmp_path / "inbox")
+            session = provider.workflow.sessions[0][2]
+            await pilot.press("escape")
+            await until(pilot, lambda: not isinstance(app.screen, ReviewBoardScreen))
+            assert session.closed
+            assert "left waiting, as it was before" in transcript_text(app)
 
     asyncio.run(exercise())

@@ -5,12 +5,15 @@ import asyncio
 import pytest
 from cleo.domain import LocalVolume, ModelChunk, SeriesOption, ToolCall, VolumeHint
 from cleo.matcher import (
+    ModelRanker,
     ModelTitleGuesser,
     SeriesMatcher,
     clean_guess,
     confident,
     describe_match,
     options_of,
+    picked,
+    rank_question,
 )
 from cleo.ports import CatalogError, ModelError
 from fakes import MemoryInbox, ScriptedModel, TitleCatalog, title_match
@@ -32,14 +35,26 @@ class FixedGuesser:
         return self.title
 
 
+class FixedRanker:
+    """Picks the option with `series_id`, recording what it was shown."""
+
+    def __init__(self, series_id):
+        self.series_id = series_id
+        self.shown = []
+
+    async def rank(self, filename, titles, options):
+        self.shown.append((filename, titles, [o.series_id for o in options]))
+        return next((o for o in options if o.series_id == self.series_id), None)
+
+
 def run(awaitable):
     return asyncio.run(awaitable)
 
 
-def matcher(files, answers, guesser=None):
+def matcher(files, answers, guesser=None, ranker=None):
     inbox = MemoryInbox(files)
     catalog = TitleCatalog(answers)
-    return SeriesMatcher(catalog, inbox, guesser), catalog
+    return SeriesMatcher(catalog, inbox, guesser, ranker), catalog
 
 
 def local(name):
@@ -235,3 +250,86 @@ def test_a_model_failure_is_no_guess():
             yield  # pragma: no cover
 
     assert run(ModelTitleGuesser(BrokenModel([])).guess("x.cbz")) is None
+
+
+@pytest.mark.parametrize(
+    ("pick", "suggested", "order"),
+    [
+        ("vinland-saga", "vinland-saga", ["vinland-saga", "saga"]),
+        ("saga", "saga", ["saga", "vinland-saga"]),
+        (None, None, ["saga", "vinland-saga"]),
+    ],
+)
+def test_the_model_may_suggest_one_of_what_nineveh_would_not_decide(
+    pick, suggested, order
+):
+    ranker = FixedRanker(pick)
+    found, _ = matcher(
+        {"saga_v11.cbz": (b"PK", None)}, {"saga": AMBIGUOUS_SAGA}, None, ranker
+    )
+    result = run(found.match(local("saga_v11.cbz")))
+    assert result.series is None
+    assert (result.suggestion.series_id if result.suggestion else None) == suggested
+    assert [item.series_id for item in result.alternatives] == order
+    assert ranker.shown == [("saga_v11.cbz", ("saga",), ["saga", "vinland-saga"])]
+
+
+def test_nothing_to_choose_from_is_never_put_to_the_model():
+    ranker = FixedRanker("pluto")
+    found, _ = matcher({"mystery.cbz": (b"PK", None)}, {}, None, ranker)
+    result = run(found.match(local("mystery.cbz")))
+    assert (result.suggestion, ranker.shown) == (None, [])
+
+
+OPTIONS = (
+    SeriesOption("saga", "Saga", "Comics", 1.0, "localName", 10),
+    SeriesOption("vinland-saga", "Vinland Saga", "Manga", 0.3, "localName", 12),
+)
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("2", "vinland-saga"),
+        ("1.", "saga"),
+        ("Number 2, because of the title.", "vinland-saga"),
+        ("NONE", None),
+        ("3", None),
+        ("0", None),
+        ("", None),
+    ],
+)
+def test_a_ranking_counts_only_a_listed_number(reply, expected):
+    choice = picked(reply, OPTIONS)
+    assert (choice.series_id if choice else None) == expected
+
+
+def test_the_ranking_question_lists_the_file_what_it_names_and_the_options():
+    assert rank_question("saga_v11.cbz", ("saga",), OPTIONS) == (
+        "File: saga_v11.cbz\n"
+        "It names: saga\n"
+        "\n"
+        "Series:\n"
+        "1. Saga — Comics · 10 volumes\n"
+        "2. Vinland Saga — Manga · 12 volumes"
+    )
+
+
+def test_the_ranker_asks_without_tools_and_a_failure_is_no_suggestion():
+    class BrokenModel(ScriptedModel):
+        async def stream_chat(self, messages, tools):
+            raise ModelError("Ollama is unavailable.")
+            yield  # pragma: no cover
+
+    model = ScriptedModel(
+        [
+            [ModelChunk("2")],
+            [ModelChunk(tool_calls=(ToolCall("search_series", {}),))],
+        ]
+    )
+    ranker = ModelRanker(model)
+    assert run(ranker.rank("saga_v11.cbz", (), OPTIONS)).series_id == "vinland-saga"
+    assert run(ranker.rank("saga_v11.cbz", (), OPTIONS)) is None
+    assert run(ModelRanker(BrokenModel([])).rank("x.cbz", (), OPTIONS)) is None
+    messages, tools = model.requests[0]
+    assert tools == [] and messages[-1]["content"].startswith("File: saga_v11.cbz")

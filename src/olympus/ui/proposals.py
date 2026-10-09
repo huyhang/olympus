@@ -20,6 +20,7 @@ from olympus.presentation import human_size, plain_text
 GLYPHS: dict[str, tuple[str, str]] = {
     "pending": ("◌", "#8b9bab"),
     "working": ("◐", "#79c0ff"),
+    "planned": ("○", "#79c0ff"),
     "needs_choice": ("?", "#d2a8ff"),
     "ready": ("●", "#3fb950"),
     "placing": ("◐", "#3fb950"),
@@ -29,12 +30,14 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "failed": ("✗", "#f85149"),
 }
 WARNING_GLYPH = ("⚠", "#d29922")
-# Each state's tally label, in display order. Ready proposals with a warning
-# are counted apart, under WARNING_LABEL.
+# Each state's tally label, in display order. Ready proposals with a warning,
+# and those carried over from before the review, are counted apart.
 TALLY_LABELS: tuple[tuple[str, str], ...] = (
     ("placed", "placed"),
     ("ready", "ready"),
+    ("planned", "planned"),
     ("warning", "to check"),
+    ("carried", "from earlier"),
     ("needs_choice", "need you"),
     ("held", "awaiting approval"),
     ("working", "in progress"),
@@ -42,10 +45,12 @@ TALLY_LABELS: tuple[tuple[str, str], ...] = (
     ("skipped", "skipped"),
 )
 IN_PROGRESS = frozenset({"pending", "working", "placing"})
+CARRIED_GLYPH = ("◆", "#56d4dd")
 ACTIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"skip"}),
+    "planned": frozenset({"place", "skip", "choose"}),
     "needs_choice": frozenset({"skip", "choose"}),
-    "ready": frozenset({"place", "skip", "choose", "rename"}),
+    "ready": frozenset({"place", "skip", "choose", "rename", "withdraw"}),
     "failed": frozenset({"skip", "choose"}),
 }
 
@@ -60,12 +65,16 @@ class DetailRow:
 def glyph(proposal: Proposal) -> tuple[str, str]:
     if proposal.state == "ready" and proposal.warning:
         return WARNING_GLYPH
+    if proposal.state == "ready" and proposal.carried_over:
+        return CARRIED_GLYPH
     return GLYPHS[proposal.state]
 
 
 def tally_key(proposal: Proposal) -> str:
     if proposal.state == "ready" and proposal.warning:
         return "warning"
+    if proposal.state == "ready" and proposal.carried_over:
+        return "carried"
     if proposal.state in IN_PROGRESS:
         return "working"
     return proposal.state
@@ -93,6 +102,8 @@ def tally_text(proposals: Sequence[Proposal]) -> Text:
 def _tally_style(key: str) -> str:
     if key == "warning":
         return WARNING_GLYPH[1]
+    if key == "carried":
+        return CARRIED_GLYPH[1]
     return GLYPHS["working" if key == "working" else key][1]
 
 
@@ -112,23 +123,40 @@ def row_note(proposal: Proposal) -> str:
     if proposal.state in {"working", "placing", "held", "failed"}:
         return plain_text(proposal.activity)
     if proposal.state == "needs_choice":
+        if proposal.suggestion is not None:
+            return f"suggested: {plain_text(proposal.suggestion.title)}"
         return "choose a series"
+    if proposal.state == "ready" and proposal.carried_over:
+        return "from earlier"
     return ""
 
 
 def allowed(proposal: Proposal | None, action: str) -> bool:
     if proposal is None or (action == "choose" and not proposal.retryable):
         return False
+    if action == "withdraw" and not proposal.carried_over:
+        return False
     return action in ACTIONS.get(proposal.state, frozenset())
 
 
 def placeable(proposals: Iterable[Proposal]) -> list[str]:
-    """What "place all" may place: ready, and nothing to check first."""
-    return [item.id for item in proposals if item.state == "ready" and not item.warning]
+    """What "place all" may place: ready or planned, with nothing to check.
+
+    Carried-over proposals are left out: they predate this review, so each
+    one is placed only on purpose.
+    """
+    return [
+        item.id
+        for item in proposals
+        if item.state in {"ready", "planned"}
+        and not item.warning
+        and not item.carried_over
+    ]
 
 
 def unsettled(proposals: Iterable[Proposal]) -> int:
-    return sum(1 for item in proposals if not item.settled)
+    """What leaving would withdraw: carried-over proposals stay as they were."""
+    return sum(1 for item in proposals if not item.settled and not item.carried_over)
 
 
 def facts(proposal: Proposal) -> str:
@@ -156,6 +184,10 @@ def _subject_rows(proposal: Proposal) -> list[DetailRow]:
     if proposal.subject is None:
         if proposal.state != "needs_choice":
             return []
+        if proposal.suggestion is not None:
+            title = plain_text(proposal.suggestion.title)
+            text = f"Not sure — suggested: {title}. Press c to confirm"
+            return [DetailRow("Series", text, "#d2a8ff")]
         return [DetailRow("Series", "Not sure yet — press c to choose", "#d2a8ff")]
     rows = [DetailRow("Series", plain_text(proposal.subject.title), "bold")]
     if proposal.subject_note:
@@ -233,7 +265,9 @@ def _summary_line(proposal: Proposal) -> str:
     if proposal.state == "failed":
         return f"✗ {source} — {plain_text(proposal.activity) or 'failed'}"
     if proposal.state == "skipped":
-        return f"– {source} — skipped"
+        return f"– {source} — {plain_text(proposal.activity) or 'skipped'}"
+    if proposal.carried_over:
+        return f"– {source} — left waiting, as it was before"
     return f"– {source} — left undecided; nothing was placed"
 
 

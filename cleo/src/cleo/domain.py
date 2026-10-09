@@ -98,12 +98,14 @@ class SeriesOption:
 class MatchResult:
     """The series a volume belongs to, or the options when that is unclear.
 
-    `reason` says how the series was settled, or why it was not.
+    `reason` says how the series was settled, or why it was not. When it was
+    not, `suggestion` is the model's pick among the options, listed first.
     """
 
     series: SeriesOption | None
     alternatives: tuple[SeriesOption, ...] = ()
     reason: str = ""
+    suggestion: SeriesOption | None = None
 
 
 __all__ = [

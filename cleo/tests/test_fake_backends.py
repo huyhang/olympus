@@ -183,6 +183,7 @@ def test_every_fake_ingest_response_has_the_fields_the_contract_requires(fresh):
     async def exercise():
         ingest = NinevehIngestClient(settings(fresh))
         try:
+            seeded = await ingest.pending()
             staged = await ingest.stage(
                 "vinland-saga",
                 "vinland_saga_v12.cbz",
@@ -194,11 +195,11 @@ def test_every_fake_ingest_response_has_the_fields_the_contract_requires(fresh):
             pending = await ingest.pending()
             placed = await ingest.commit(staged["ingestId"], "Vinland Saga 012 (2).cbz")
             await ingest.discard(spare["ingestId"])
-            return staged, pending, placed, await ingest.pending()
+            return seeded, staged, pending, placed, await ingest.pending()
         finally:
             await ingest.aclose()
 
-    staged, pending, placed, after = asyncio.run(exercise())
+    seeded, staged, pending, placed, after = asyncio.run(exercise())
     schemas = json.loads(CONTRACT.read_text(encoding="utf-8"))["components"]["schemas"]
     for name, payload in (
         ("StagedIngest", staged),
@@ -208,7 +209,8 @@ def test_every_fake_ingest_response_has_the_fields_the_contract_requires(fresh):
         assert missing(payload, schemas[name], schemas) == [], name
     assert staged["duplicateOf"]["filename"] == "Vinland Saga 012.cbz"
     assert placed["relativePath"] == "Manga/Vinland Saga/Vinland Saga 012 (2).cbz"
-    assert len(pending["pending"]) == 2 and after == {"pending": []}
+    assert len(pending["pending"]) == len(seeded["pending"]) + 2
+    assert after == seeded
 
 
 @pytest.mark.parametrize(
@@ -252,8 +254,9 @@ def test_a_stage_only_scenario_refuses_to_place(fresh):
         finally:
             await ingest.aclose()
 
+    seeded = len(fresh.scenario.pending()["pending"])
     status, pending = asyncio.run(exercise())
-    assert status == 403 and len(pending["pending"]) == 1
+    assert status == 403 and len(pending["pending"]) == seeded + 1
 
 
 def test_unknown_or_unauthenticated_ingest_requests_are_refused(fresh):
@@ -292,8 +295,17 @@ def test_the_fixture_inbox_exercises_every_kind_of_proposal(fresh):
                 await close()
         return latest
 
+    seeded = fresh.scenario.pending()
     latest = asyncio.run(exercise())
-    states = {name: (item.state, bool(item.warning)) for name, item in latest.items()}
+    queued = [item for name, item in latest.items() if name.startswith("queue:")]
+    assert [(item.source, item.state, item.carried_over) for item in queued] == [
+        ("vinland_saga_v15.cbz", "ready", True)
+    ]
+    states = {
+        name: (item.state, bool(item.warning))
+        for name, item in latest.items()
+        if not name.startswith("queue:")
+    }
     assert states == {
         "[Digital] Vinland.Saga.v14 (2024) (1r0n).cbz": ("ready", False),
         "Berserk v42.cbz": ("failed", False),
@@ -309,7 +321,11 @@ def test_the_fixture_inbox_exercises_every_kind_of_proposal(fresh):
         "suggested by the model"
     )
     assert latest["scan_0042.cbz"].subject.title == "20th Century Boys"
-    assert fresh.scenario.pending() == {"pending": []}
+    # The volume Nineveh already held is taken over, not uploaded again.
+    assert latest["Vinland_Saga_v13.cbz"].carried_over
+    assert latest["saga_v11.cbz"].suggestion.title == "Saga"
+    # Leaving withdrew what the review staged and kept what it found waiting.
+    assert fresh.scenario.pending() == seeded
 
 
 def test_asking_to_file_offers_the_board(server):

@@ -44,6 +44,9 @@ ACTION_FAILURES = (RuntimeError, OSError, ValueError, httpx.HTTPError)
 # the summary never calls a volume undecided that the agent was placing.
 PREPARING = "preparing"
 PLACING = "placing"
+# How long a planned proposal must stay highlighted before it is prepared, so
+# scrolling past files does not start work for each of them.
+DWELL = 0.5
 
 Search = Callable[[str], Awaitable[tuple[Candidate, ...]]]
 
@@ -55,6 +58,11 @@ class ProposalRow(ListItem):
 
     def show(self, proposal: Proposal) -> None:
         self.query_one(Static).update(view.row_text(proposal))
+
+
+def divider(label: str) -> ListItem:
+    """A heading in the file list; the cursor passes over it."""
+    return ListItem(Static(label, markup=False), classes="divider", disabled=True)
 
 
 class ReviewBoardScreen(Screen[list[Proposal]]):
@@ -74,6 +82,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
     }
     #board-files ListItem { height: 1; padding: 0 1; }
     #board-files ListItem.--highlight { background: #1d3044; }
+    #board-files ListItem.divider { margin-top: 1; color: #56d4dd; }
     #board-detail {
         width: 3fr; height: 1fr; margin-left: 1; padding: 1 2;
         background: #0f1720; border: round #2f81f7;
@@ -87,6 +96,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         Binding("s", "skip", "Skip"),
         Binding("c", "choose", "Series"),
         Binding("r", "rename", "Rename"),
+        Binding("w", "withdraw", "Withdraw"),
         Binding("A", "place_all", "Place all ready"),
         Binding("escape", "leave", "Done"),
     ]
@@ -102,6 +112,11 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         self._proposal_rows: dict[str, ProposalRow] = {}
         self._prepared = False
         self._leaving = False
+        self._divided = False
+        self._dwell_target: str | None = None
+        self._dwell_timer: Timer | None = None
+        # The row the board highlighted by itself, before the user moved.
+        self._resting_on: str | None = None
         self._session: ReviewSession | None = None
 
     def compose(self) -> ComposeResult:
@@ -128,6 +143,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
                         yield Button("Skip", id="board-skip")
                         yield Button("Series…", id="board-choose")
                         yield Button("Rename", id="board-rename")
+                        yield Button("Withdraw", id="board-withdraw")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -154,12 +170,17 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         if row is None:
             row = self._proposal_rows[proposal.id] = ProposalRow(proposal)
             files = self.query_one("#board-files", ListView)
+            if proposal.carried_over and not self._divided:
+                self._divided = True
+                files.append(divider("From before this review"))
             files.append(row)
             if files.index is None:
                 files.index = 0
+                self._resting_on = proposal.id
         else:
             row.show(proposal)
         self._refresh()
+        self._watch_dwell()
 
     async def _run(self) -> None:
         try:
@@ -199,7 +220,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
             card.update(Text("Nothing here. Press Esc to go back.", style="#8b9bab"))
         else:
             card.update(view.detail_renderable(current))
-        for action in ("place", "skip", "choose", "rename"):
+        for action in ("place", "skip", "choose", "rename", "withdraw"):
             button = self.query_one(f"#board-{action}", Button)
             button.disabled = not view.allowed(current, action)
 
@@ -219,6 +240,28 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
     @on(ListView.Highlighted, "#board-files")
     def highlighted(self) -> None:
         self._show_detail()
+        self._watch_dwell()
+
+    def _watch_dwell(self) -> None:
+        """Prepare a planned proposal once the user has stayed on it a moment."""
+        current = self._highlighted()
+        if current is not None and current.id != self._resting_on:
+            self._resting_on = None
+        chosen = current is not None and current.id != self._resting_on
+        target = current.id if chosen and current.state == "planned" else None
+        if target == self._dwell_target:
+            return
+        if self._dwell_timer is not None:
+            self._dwell_timer.stop()
+        self._dwell_target = target
+        if target is not None:
+            self._dwell_timer = self.set_timer(DWELL, self._dwelt)
+
+    def _dwelt(self) -> None:
+        current = self._highlighted()
+        target, self._dwell_target = self._dwell_target, None
+        if current is not None and current.id == target and current.state == "planned":
+            self._act(self._require_session().prepare, current.id)
 
     @on(ListView.Selected, "#board-files")
     def selected(self) -> None:
@@ -235,6 +278,7 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
             "board-skip": self.action_skip,
             "board-choose": self.action_choose,
             "board-rename": self.action_rename,
+            "board-withdraw": self.action_withdraw,
         }
         actions[event.button.id or ""]()
 
@@ -247,6 +291,11 @@ class ReviewBoardScreen(Screen[list[Proposal]]):
         current = self._permitted("skip")
         if current:
             self._act(self._require_session().skip, current.id)
+
+    def action_withdraw(self) -> None:
+        current = self._permitted("withdraw")
+        if current:
+            self._act(self._require_session().withdraw, current.id)
 
     def action_choose(self) -> None:
         current = self._permitted("choose")
